@@ -36,6 +36,7 @@
 
 #include "RmlUi/Core/Element.h"
 #include "RmlUi/Core/ElementDocument.h"
+#include "RmlUi/Core/Context.h"
 
 #include <algorithm>
 #include <cmath>
@@ -45,6 +46,10 @@
 
 namespace mdJucePlugin
 {
+#if JUCE_MAC
+	int currentPanelNativeKeyCode();
+	bool isPanelNativeKeyDown(int _keyCode);
+#endif
 	namespace
 	{
 		// The two machines use the same framebuffer geometry but different physical
@@ -63,6 +68,55 @@ namespace mdJucePlugin
 			const char* id;
 			md::PanelControl control;
 		};
+
+		struct PanelKey
+		{
+			int keyCode;
+			md::PanelControl control;
+		};
+
+		const PanelKey g_panelKeys[] =
+		{
+			{ juce::KeyPress::leftKey, md::PanelControl::Left },
+			{ juce::KeyPress::rightKey, md::PanelControl::Right },
+			{ juce::KeyPress::downKey, md::PanelControl::Down },
+			{ juce::KeyPress::upKey, md::PanelControl::Up },
+			{ juce::KeyPress::returnKey, md::PanelControl::Enter },
+			{ juce::KeyPress::backspaceKey, md::PanelControl::Exit },
+		};
+
+		constexpr int g_functionKey = -1;
+		constexpr char g_trigKeys[] = "12345678QWERTYUI";
+		// The home row avoids macOS Option+E/I/U accent dead keys.
+		constexpr char g_trackKeys[] = "12345678ASDFGHJK";
+		constexpr char g_pageKeys[] = "ASDFGH;";
+		const PanelKey g_performanceKeys[] =
+		{
+			{ 'J', md::PanelControl::Record },
+			{ 'K', md::PanelControl::Play },
+			{ juce::KeyPress::spaceKey, md::PanelControl::Play },
+			{ 'L', md::PanelControl::Stop },
+			{ 'O', md::PanelControl::Kit },
+			{ 'N', md::PanelControl::Scale },
+			{ '\\', md::PanelControl::Tempo },
+			{ 'B', md::PanelControl::BankGroup },
+			{ 'Z', md::PanelControl::BankA },
+			{ 'X', md::PanelControl::BankB },
+			{ 'C', md::PanelControl::BankC },
+			{ 'V', md::PanelControl::BankD },
+		};
+
+		int panelKeyCode(int _keyCode)
+		{
+			if(_keyCode >= 'a' && _keyCode <= 'z')
+				return _keyCode - 'a' + 'A';
+			// JUCE can report the shifted symbol for punctuation/number keys.
+			constexpr char shifted[] = "!@#$%^&*:{}|";
+			constexpr char plain[] = "12345678;[]\\";
+			for(size_t i = 0; i < sizeof(shifted) - 1; ++i)
+				if(_keyCode == shifted[i]) return plain[i];
+			return _keyCode;
+		}
 
 		bool lcdChanged(const md::FrontPanel& _a, const md::FrontPanel& _b)
 		{
@@ -148,6 +202,8 @@ namespace mdJucePlugin
 
 	Editor::~Editor()
 	{
+		if(auto* const panel = getRmlComponent())
+			panel->removeKeyListener(this);
 		juce::Desktop::getInstance().removeFocusChangeListener(this);
 		m_panelSteps.clear();
 		cancelPanelInputGestures();
@@ -168,19 +224,21 @@ namespace mdJucePlugin
 
 	bool Editor::sendPanelEvent(const uint8_t _command, const uint8_t _argument) const
 	{
+		const auto argument = static_cast<uint8_t>(
+			_argument | m_keyboardPanelRows.mask(_command));
 		auto& plugin = getProcessor().getPlugin();
 		auto& diagnostics = plugin.getRealtimeInstrumentation();
 		const auto model = static_cast<uint32_t>(getModel());
-		const auto token = diagnostics.beginPanelInput(model, _command, _argument);
+		const auto token = diagnostics.beginPanelInput(model, _command, argument);
 		const auto accepted = plugin.withDeviceLocked(
 			[&](synthLib::Device* const _device)
 			{
 				auto* const device = dynamic_cast<md::Device*>(_device);
 				if(!device)
 					return false;
-				return device->sendPanelEvent(_command, _argument);
+				return device->sendPanelEvent(_command, argument);
 			});
-		diagnostics.endPanelInput(token, model, _command, _argument, accepted);
+		diagnostics.endPanelInput(token, model, _command, argument, accepted);
 		return accepted;
 	}
 
@@ -272,6 +330,8 @@ namespace mdJucePlugin
 	void Editor::create()
 	{
 		jucePluginEditorLib::Editor::create();
+		if(auto* const panel = getRmlComponent())
+			panel->addKeyListener(this);
 
 		if(auto* romSelector = findChild<juceRmlUi::ElemComboBox>("RomSelector", false))
 		{
@@ -597,6 +657,10 @@ namespace mdJucePlugin
 			juceRmlUi::EventListener::Add(document, Rml::EventId::Keyup,
 				[this](const Rml::Event& _event)
 				{
+					if(juceRmlUi::helper::getKeyIdentifier(_event) == Rml::Input::KI_UNKNOWN)
+						setKeyboardFunction(_event.GetParameter<int>("shift_key", 0) != 0
+							&& _event.GetParameter<int>("ctrl_key", 0) == 0
+							&& _event.GetParameter<int>("meta_key", 0) == 0);
 					if(!juceRmlUi::helper::getKeyModAlt(_event))
 						releaseEncoderPress();
 					if(_event.GetParameter<int>("shift_key", 0) == 0
@@ -606,8 +670,13 @@ namespace mdJucePlugin
 			juceRmlUi::EventListener::Add(document, Rml::EventId::Keydown,
 				[this](Rml::Event& _event)
 				{
+					if(juceRmlUi::helper::getKeyIdentifier(_event) == Rml::Input::KI_UNKNOWN)
+						setKeyboardFunction(_event.GetParameter<int>("shift_key", 0) != 0
+							&& _event.GetParameter<int>("ctrl_key", 0) == 0
+							&& _event.GetParameter<int>("meta_key", 0) == 0);
 					if(juceRmlUi::helper::getKeyIdentifier(_event) != Rml::Input::KI_ESCAPE
-						|| (m_shiftPanelLatch.empty() && m_activePanelButtons.empty()
+						|| (m_keyboardPanelKeys.empty()
+							&& m_shiftPanelLatch.empty() && m_activePanelButtons.empty()
 							&& m_panelGesturePackets.empty() && !m_patternBankPacket
 							&& !m_encoderPress.active() && !m_lcdDragGesture.active()))
 						return;
@@ -897,10 +966,184 @@ namespace mdJucePlugin
 
 	void Editor::releaseAllPanelInputs()
 	{
+		while(!m_keyboardPanelKeys.empty())
+			setPanelKey(m_keyboardPanelKeys.back().keyCode, false);
 		for(uint8_t row = 0x20; row <= 0x26; ++row)
 			if(m_panelRows.mask(row) != 0)
 				(void)sendPanelEvent(row, 0);
 		m_panelRows.reset();
+	}
+
+	bool Editor::panelKeyboardAllowed()
+	{
+		auto* const panel = getRmlComponent();
+		if(!panel || settingsOpened() || panel->isCurrentlyBlockedByAnotherModalComponent())
+			return false;
+
+		juceRmlUi::RmlInterfaces::ScopedAccess access(*panel);
+		// Native dialogs and Rml popup menus retain their normal keyboard handling.
+		if(auto* const focused = panel->getContext()->GetFocusElement())
+			if(focused->GetOwnerDocument() != getDocument())
+				return false;
+
+		return true;
+	}
+
+	void Editor::setKeyboardFunction(const bool _pressed)
+	{
+		if(!_pressed || (panelKeyboardAllowed() && getRmlComponent()->hasKeyboardFocus(true)))
+			setPanelKey(g_functionKey, _pressed);
+	}
+
+	bool Editor::keyPressed(const juce::KeyPress& _key, juce::Component*)
+	{
+		if(!panelKeyboardAllowed())
+			return false;
+		// Cancel before the base editor's Rml listener handles Escape by opening
+		// settings. Keep its usual settings shortcut when there is no hold.
+		if(_key.getKeyCode() == juce::KeyPress::escapeKey
+			&& (!m_keyboardPanelKeys.empty() || !m_shiftPanelLatch.empty()
+				|| !m_activePanelButtons.empty() || !m_panelGesturePackets.empty()
+				|| m_patternBankPacket || m_encoderPress.active() || m_lcdDragGesture.active()))
+		{
+			cancelPanelInputGestures();
+			return true;
+		}
+		const auto modifiers = _key.getModifiers();
+		if(modifiers.isShiftDown() && !modifiers.isCtrlDown() && !modifiers.isCommandDown())
+			setKeyboardFunction(true);
+		// Intercept before RmlUi uses arrows on a focused knob or Enter on the
+		// last mouse target. Record the native key so modifier changes cannot
+		// interrupt a hold on macOS (JUCE clears its key cache on those changes).
+		int nativeKeyCode = -1;
+#if JUCE_MAC
+		nativeKeyCode = currentPanelNativeKeyCode();
+#endif
+		return setPanelKey(_key.getKeyCode(), true, modifiers, nativeKeyCode);
+	}
+
+	bool Editor::keyStateChanged(const bool _isKeyDown, juce::Component*)
+	{
+		return !_isKeyDown && releaseInactivePanelKeys();
+	}
+
+	bool Editor::setPanelKey(const int _rawKeyCode, const bool _pressed,
+		const juce::ModifierKeys _modifiers, const int _nativeKeyCode)
+	{
+		const auto keyCode = panelKeyCode(_rawKeyCode);
+		const auto held = std::find_if(m_keyboardPanelKeys.begin(), m_keyboardPanelKeys.end(),
+			[keyCode](const KeyboardPanelKey& _key) { return _key.keyCode == keyCode; });
+		if(!_pressed)
+		{
+			if(held == m_keyboardPanelKeys.end()) return false;
+			const auto packet = held->packet;
+			m_keyboardPanelKeys.erase(held);
+			// A key keeps the binding it acquired on keydown, even if Option was
+			// released first. Aliases (K/Space) must also own a row bit separately.
+			m_keyboardPanelRows.reset();
+			for(const auto& key : m_keyboardPanelKeys)
+				if(key.packet) m_keyboardPanelRows.press(*key.packet);
+			if(packet)
+			{
+				(void)sendPanelEvent(packet->row, m_panelRows.mask(packet->row));
+				if(getModel() == md::MachineModel::Monomachine && packet->row <= 0x21)
+					releasePatternBankLatch();
+			}
+			return true;
+		}
+		// Firmware handles held buttons; OS repeat must not repeat actions.
+		if(held != m_keyboardPanelKeys.end()) return true;
+
+		std::optional<md::PanelPacket> packet;
+		int track = -1;
+		int page = -1;
+		const auto model = getModel();
+		const auto navigation = std::find_if(std::begin(g_panelKeys), std::end(g_panelKeys),
+			[keyCode](const PanelKey& _key) { return _key.keyCode == keyCode; });
+		if(keyCode == g_functionKey)
+			packet = md::panelPacket(model, md::PanelControl::Function);
+		else if(navigation != std::end(g_panelKeys))
+			packet = md::panelPacket(model, navigation->control);
+		else
+		{
+			// Leave host/desktop shortcuts alone, including every Control+number.
+			if(_modifiers.isCtrlDown() || _modifiers.isCommandDown()) return false;
+			const auto trig = std::find(std::begin(g_trigKeys), std::end(g_trigKeys) - 1, keyCode);
+			const auto dataPage = std::find(std::begin(g_pageKeys), std::end(g_pageKeys) - 1, keyCode);
+			if(_modifiers.isAltDown())
+			{
+				const auto trackKey = std::find(std::begin(g_trackKeys), std::end(g_trackKeys) - 1, keyCode);
+				if(trackKey == std::end(g_trackKeys) - 1) return false;
+				track = static_cast<int>(trackKey - std::begin(g_trackKeys));
+				if(model == md::MachineModel::Monomachine)
+				{
+					if(track >= 6) return false;
+					packet = md::panelPacket(model, static_cast<md::PanelControl>(
+						static_cast<int>(md::PanelControl::Track1) + track));
+				}
+			}
+			else if(trig != std::end(g_trigKeys) - 1)
+				packet = md::panelPacket(model, static_cast<md::PanelControl>(
+					static_cast<int>(md::PanelControl::Trigger1) + trig - std::begin(g_trigKeys)));
+			else if(keyCode >= juce::KeyPress::F1Key && keyCode <= juce::KeyPress::F8Key)
+				packet = md::panelEncoderPressPacket(model,
+					static_cast<md::PanelEncoder>(keyCode - juce::KeyPress::F1Key));
+			else if(dataPage != std::end(g_pageKeys) - 1)
+			{
+				page = static_cast<int>(dataPage - std::begin(g_pageKeys));
+				if(model == md::MachineModel::Machinedrum && page >= 3) return false;
+			}
+			else if(keyCode == 'P')
+				packet = md::panelPacket(model, model == md::MachineModel::Machinedrum
+					? md::PanelControl::PatternSong : md::PanelControl::SongEnable);
+			else if(keyCode == 'M')
+				packet = md::panelPacket(model, model == md::MachineModel::Machinedrum
+					? md::PanelControl::ClassicExtended : md::PanelControl::TrigSelect);
+			else if(keyCode == '[' || keyCode == ']')
+				packet = md::panelPacket(model, keyCode == '['
+					? md::PanelControl::DataPageBackward : md::PanelControl::DataPageForward);
+			else
+			{
+				const auto binding = std::find_if(std::begin(g_performanceKeys), std::end(g_performanceKeys),
+					[keyCode](const PanelKey& _key) { return _key.keyCode == keyCode; });
+				if(binding != std::end(g_performanceKeys)) packet = md::panelPacket(model, binding->control);
+			}
+		}
+		if(!packet && track < 0 && page < 0) return false;
+		m_keyboardPanelKeys.push_back({keyCode, _nativeKeyCode, packet});
+		if(packet)
+		{
+			m_keyboardPanelRows.press(*packet);
+			(void)sendPanelEvent(packet->row, m_panelRows.mask(packet->row));
+		}
+		else if(track >= 0)
+			selectMachinedrumTrack(track);
+		else if(model == md::MachineModel::Machinedrum)
+			selectMachinedrumDataPage(page);
+		else
+			selectMonomachineDataPage(page);
+		return true;
+	}
+
+	bool Editor::releaseInactivePanelKeys()
+	{
+		bool released = false;
+		for(size_t i = m_keyboardPanelKeys.size(); i-- > 0;)
+		{
+			const auto key = m_keyboardPanelKeys[i];
+			bool down = key.keyCode == g_functionKey
+				? juce::ModifierKeys::getCurrentModifiersRealtime().isShiftDown()
+				: juce::KeyPress::isKeyCurrentlyDown(key.keyCode);
+#if JUCE_MAC
+			if(key.nativeKeyCode >= 0) down = isPanelNativeKeyDown(key.nativeKeyCode);
+#endif
+			if(!down || !panelKeyboardAllowed())
+			{
+				setPanelKey(key.keyCode, false);
+				released = true;
+			}
+		}
+		return released;
 	}
 
 	void Editor::queuePanelPulse(const md::PanelControl _control, const int _count)
@@ -2117,6 +2360,9 @@ namespace mdJucePlugin
 			return;
 
 		const auto nowMilliseconds = juce::Time::getMillisecondCounterHiRes();
+		// Hosts can miss a native key-up. Only release existing holds here; never
+		// start a panel press from keys used in another window or application.
+		releaseInactivePanelKeys();
 		const auto modifiers = juce::ModifierKeys::getCurrentModifiersRealtime();
 		if(m_encoderPress.active() && (!modifiers.isAltDown() || !modifiers.isLeftButtonDown()))
 			releaseEncoderPress();

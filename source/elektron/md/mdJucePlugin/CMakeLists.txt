@@ -69,6 +69,10 @@ juce_add_binary_data(mmJucePlugin_BinaryData SOURCES
 	${COMMON_ASSETS} "tus_settings_gui_Monomachine.rml"
 	"tus_settings_dspaudio_Monomachine.rml" ${MM_SKIN_ASSETS})
 
+if(APPLE)
+	list(APPEND SOURCES mdPanelKeyboard_mac.mm)
+endif()
+
 createJucePlugin(mdJucePlugin "Gearmulator MD" TRUE "Tmdr" mdJucePlugin_BinaryData mdLib)
 createJucePlugin(mmJucePlugin "Gearmulator MM" TRUE "Tmno" mmJucePlugin_BinaryData mdLib)
 
@@ -78,6 +82,9 @@ createJucePlugin(mmJucePlugin "Gearmulator MM" TRUE "Tmno" mmJucePlugin_BinaryDa
 # deadline. Keep the input selectable, but start new standalone configurations
 # with output only.
 foreach(plugin_target mdJucePlugin mmJucePlugin)
+	if(APPLE)
+		target_link_libraries(${plugin_target} PRIVATE "-framework CoreGraphics")
+	endif()
 	target_compile_definitions(${plugin_target} PUBLIC
 		JUCE_STANDALONE_PLUGIN_AUTO_OPEN_AUDIO_INPUT=0
 		JUCE_VST3_EMULATE_MIDI_PC_WITH_PROGRAMS=1)
@@ -106,6 +113,21 @@ endif()
 target_compile_definitions(mmJucePlugin PRIVATE MD_JUCEPLUGIN_MONOMACHINE=1)
 
 if(BUILD_TESTING)
+	foreach(product md mm)
+		add_executable(${product}PanelKeyboardTest mdPanelKeyboardTest.cpp)
+		if(product STREQUAL "mm")
+			target_compile_definitions(${product}PanelKeyboardTest PRIVATE MD_KEYBOARD_TEST_MM=1)
+		endif()
+		target_include_directories(${product}PanelKeyboardTest PRIVATE
+			"${CMAKE_SOURCE_DIR}/source" "${CMAKE_SOURCE_DIR}/source/elektron/md")
+		target_link_libraries(${product}PanelKeyboardTest PRIVATE ${product}JucePlugin
+			jucePluginEditorLib juceRmlUi juceUiLib juce_plugin_modules mdLib)
+		add_test(NAME ${product}PanelKeyboardTest COMMAND ${product}PanelKeyboardTest)
+		set_tests_properties(${product}PanelKeyboardTest PROPERTIES
+			LABELS "IntegrationTest;Panel;KeyboardInput")
+		set_property(TARGET ${product}PanelKeyboardTest PROPERTY FOLDER "Elektron/test")
+	endforeach()
+
 	juce_add_plugin(mdProgramChangeProbe
 		PRODUCTS_FOLDER "${CMAKE_BINARY_DIR}/test-products/$<CONFIG>"
 		COMPANY_NAME "Gearmulator" IS_SYNTH TRUE NEEDS_MIDI_INPUT TRUE

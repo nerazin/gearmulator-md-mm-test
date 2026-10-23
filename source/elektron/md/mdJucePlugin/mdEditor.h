@@ -51,7 +51,7 @@ namespace mdJucePlugin
 	struct EditorIdentityTestAccess;
 
 	class Editor final : public jucePluginEditorLib::Editor, juce::MultiTimer,
-		private juce::FocusChangeListener
+		private juce::FocusChangeListener, private juce::KeyListener
 	{
 	public:
 		Editor(jucePluginEditorLib::Processor& _processor, const jucePluginEditorLib::Skin& _skin);
@@ -127,6 +127,13 @@ namespace mdJucePlugin
 		void cancelPanelInputGestures();
 		void releaseAllPanelInputs();
 		void globalFocusChanged(juce::Component* _focusedComponent) override;
+		bool keyPressed(const juce::KeyPress& _key, juce::Component*) override;
+		bool keyStateChanged(bool _isKeyDown, juce::Component*) override;
+		bool panelKeyboardAllowed();
+		void setKeyboardFunction(bool _pressed);
+		bool setPanelKey(int _keyCode, bool _pressed, juce::ModifierKeys _modifiers = {},
+			int _nativeKeyCode = -1);
+		bool releaseInactivePanelKeys();
 		void queuePanelPulse(md::PanelControl _control, int _count = 1);
 		void servicePanelQueue();
 		void servicePanelNavigation();
@@ -202,6 +209,16 @@ namespace mdJucePlugin
 		uint64_t m_ledResyncSequence = 0;
 
 		md::PanelRowState m_panelRows;
+		// Keyboard and mouse holds own their bits independently, including when
+		// both inputs hold the same control. sendPanelEvent combines the rows.
+		md::PanelRowState m_keyboardPanelRows;
+		struct KeyboardPanelKey
+		{
+			int keyCode;
+			int nativeKeyCode;
+			std::optional<md::PanelPacket> packet;
+		};
+		std::vector<KeyboardPanelKey> m_keyboardPanelKeys;
 		juceRmlUi::ElemButton* m_patternBankButton = nullptr;
 		std::optional<md::PanelPacket> m_patternBankPacket;
 		Rml::Element* m_panelGestureElement = nullptr;

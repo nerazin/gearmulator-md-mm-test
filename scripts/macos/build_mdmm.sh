@@ -210,6 +210,8 @@ cmake --build "${build_dir}" --parallel 4 --target \
   mdProgramChangeProbe_VST3 \
   mdStandaloneRendererPolicyTest \
   mdPanelRenderingTest \
+  mdPanelKeyboardTest \
+  mmPanelKeyboardTest \
   juceRmlMouseInputTest \
   mdFrontPanelPresentationTest \
   mdFirmwareImageTest \
@@ -238,6 +240,8 @@ for test_name in \
   mdFlashTest \
   mdStandaloneRendererPolicyTest \
   mdPanelRenderingTest \
+  mdPanelKeyboardTest \
+  mmPanelKeyboardTest \
   juceRmlMouseInputTest \
   mdFrontPanelPresentationTests \
   mdAudioQueueTest \
