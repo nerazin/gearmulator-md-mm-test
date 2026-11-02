@@ -130,6 +130,7 @@ namespace mdJucePlugin
 		bool keyPressed(const juce::KeyPress& _key, juce::Component*) override;
 		bool keyStateChanged(bool _isKeyDown, juce::Component*) override;
 		bool panelKeyboardAllowed();
+		void panelModifiersChanged(const Rml::Event& _event);
 		void setKeyboardFunction(bool _pressed);
 		bool setPanelKey(int _keyCode, bool _pressed, juce::ModifierKeys _modifiers = {},
 			int _nativeKeyCode = -1);
@@ -219,6 +220,9 @@ namespace mdJucePlugin
 			std::optional<md::PanelPacket> packet;
 		};
 		std::vector<KeyboardPanelKey> m_keyboardPanelKeys;
+		// Once Shift is used for a mouse gesture, reserve it for that gesture
+		// until released; keyboard targets must not add an implicit FUNCTION.
+		bool m_mouseOwnsShift = false;
 		juceRmlUi::ElemButton* m_patternBankButton = nullptr;
 		std::optional<md::PanelPacket> m_patternBankPacket;
 		Rml::Element* m_panelGestureElement = nullptr;

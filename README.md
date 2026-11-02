@@ -14,7 +14,8 @@ available for desktop switching.
 | Left / Right / Down / Up | Corresponding arrow button | Same |
 | Enter / Return | YES | YES |
 | Backspace (Mac Delete / ⌫) | NO | NO |
-| Hold Shift | Hold FUNCTION | Hold FUNCTION |
+| Shift + a keyboard button | FUNCTION + that button, when no Shift-click gesture is active | Same |
+| Shift-click a panel button | Hold the clicked button until Shift is released | Same |
 | 1 2 3 4 5 6 7 8 | TRIG 1–8 | TRIG 1–8 |
 | Q W E R T Y U I | TRIG 9–16 | TRIG 9–16 |
 | Option/Alt + 1–6 | Select tracks 1–6 | Hold/select tracks 1–6 |
@@ -34,7 +35,9 @@ available for desktop switching.
 | Z X C V | Bank buttons A/E, B/F, C/G, D/H | Same |
 | A S D | Synthesis, Effects, Routing pages | Synthesis, Amplification, Filter pages |
 | F G H ; | Unassigned | Effects, LFO 1, LFO 2, LFO 3 pages |
-| [ / ] | Unassigned | Previous / next data page button |
+| ] | SYNTHESIS / EFFECTS / ROUTING page button | Next data page button |
+| Shift + ] | FUNCTION + page button (LFO) | FUNCTION + next data page button |
+| [ | Unassigned | Previous data page button |
 | M | CLASSIC/EXTENDED | TRIG SELECT |
 | F1–F8 | Hold encoder switches A–H | Same |
 | Escape | Release held panel inputs; toggle settings when idle | Same |
@@ -47,9 +50,15 @@ mouse controls still turn the encoders.
 
 The bindings work throughout the emulated machine's pages while its panel has
 keyboard focus, including with mouse-held FUNCTION, COPY, CLEAR and PASTE.
-Shift is a real FUNCTION hold and can be combined with the other button keys;
-secondary actions follow the firmware and the current screen. The existing
-Shift-click mouse latch also remains available. MD track selection and direct
+Shift alone does not press FUNCTION: Shift-click holds only the clicked panel
+button, so trigs can be held for parameter locks without selecting another sound.
+Hold Shift and press a keyboard button for a FUNCTION chord. The implicit
+FUNCTION releases when Shift or the last keyboard button is released.
+After a Shift-click, Shift remains reserved for mouse holds until it is released;
+keyboard arrows, trigs and encoder switches can then be used with those holds
+without adding FUNCTION. To hold FUNCTION for a mouse action, Shift-click the
+on-screen FUNCTION button. Secondary actions follow the firmware and current
+screen. MD track selection and direct
 page selection use the same actions as their clickable track/page labels.
 
 Each key keeps its binding until released, including when Shift or Option is

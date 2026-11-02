@@ -654,13 +654,18 @@ namespace mdJucePlugin
 
 		if(auto* const document = getDocument())
 		{
+			juceRmlUi::EventListener::Add(document, Rml::EventId::Mousedown,
+				[this](const Rml::Event& _event)
+				{
+					m_mouseOwnsShift = _event.GetParameter<int>("shift_key", 0) != 0;
+					if(m_mouseOwnsShift)
+						setKeyboardFunction(false);
+				}, true); // Release keyboard FUNCTION before the clicked target is pressed.
 			juceRmlUi::EventListener::Add(document, Rml::EventId::Keyup,
 				[this](const Rml::Event& _event)
 				{
 					if(juceRmlUi::helper::getKeyIdentifier(_event) == Rml::Input::KI_UNKNOWN)
-						setKeyboardFunction(_event.GetParameter<int>("shift_key", 0) != 0
-							&& _event.GetParameter<int>("ctrl_key", 0) == 0
-							&& _event.GetParameter<int>("meta_key", 0) == 0);
+						panelModifiersChanged(_event);
 					if(!juceRmlUi::helper::getKeyModAlt(_event))
 						releaseEncoderPress();
 					if(_event.GetParameter<int>("shift_key", 0) == 0
@@ -671,9 +676,7 @@ namespace mdJucePlugin
 				[this](Rml::Event& _event)
 				{
 					if(juceRmlUi::helper::getKeyIdentifier(_event) == Rml::Input::KI_UNKNOWN)
-						setKeyboardFunction(_event.GetParameter<int>("shift_key", 0) != 0
-							&& _event.GetParameter<int>("ctrl_key", 0) == 0
-							&& _event.GetParameter<int>("meta_key", 0) == 0);
+						panelModifiersChanged(_event);
 					if(juceRmlUi::helper::getKeyIdentifier(_event) != Rml::Input::KI_ESCAPE
 						|| (m_keyboardPanelKeys.empty()
 							&& m_shiftPanelLatch.empty() && m_activePanelButtons.empty()
@@ -932,6 +935,7 @@ namespace mdJucePlugin
 		endPanelGesture();
 		releasePanelButtonGestures();
 		releaseAllPanelInputs();
+		m_mouseOwnsShift = false;
 	}
 
 	void Editor::releaseEncoderPress()
@@ -989,10 +993,24 @@ namespace mdJucePlugin
 		return true;
 	}
 
+	void Editor::panelModifiersChanged(const Rml::Event& _event)
+	{
+		const bool shiftDown = _event.GetParameter<int>("shift_key", 0) != 0;
+		if(!shiftDown)
+			m_mouseOwnsShift = false;
+		// Shift alone belongs to mouse latching. Acquire FUNCTION only on a
+		// recognised keyboard button press, never on a bare modifier transition.
+		if(!shiftDown || _event.GetParameter<int>("ctrl_key", 0) != 0
+			|| _event.GetParameter<int>("meta_key", 0) != 0)
+			setKeyboardFunction(false);
+	}
+
 	void Editor::setKeyboardFunction(const bool _pressed)
 	{
-		if(!_pressed || (panelKeyboardAllowed() && getRmlComponent()->hasKeyboardFocus(true)))
-			setPanelKey(g_functionKey, _pressed);
+		const bool hasTarget = std::any_of(m_keyboardPanelKeys.begin(), m_keyboardPanelKeys.end(),
+			[](const KeyboardPanelKey& _key) { return _key.keyCode != g_functionKey && _key.packet.has_value(); });
+		setPanelKey(g_functionKey, _pressed && !m_mouseOwnsShift && hasTarget
+			&& panelKeyboardAllowed() && getRmlComponent()->hasKeyboardFocus(true));
 	}
 
 	bool Editor::keyPressed(const juce::KeyPress& _key, juce::Component*)
@@ -1010,8 +1028,6 @@ namespace mdJucePlugin
 			return true;
 		}
 		const auto modifiers = _key.getModifiers();
-		if(modifiers.isShiftDown() && !modifiers.isCtrlDown() && !modifiers.isCommandDown())
-			setKeyboardFunction(true);
 		// Intercept before RmlUi uses arrows on a focused knob or Enter on the
 		// last mouse target. Record the native key so modifier changes cannot
 		// interrupt a hold on macOS (JUCE clears its key cache on those changes).
@@ -1049,6 +1065,9 @@ namespace mdJucePlugin
 				if(getModel() == md::MachineModel::Monomachine && packet->row <= 0x21)
 					releasePatternBankLatch();
 			}
+			if(keyCode != g_functionKey)
+				setKeyboardFunction(std::any_of(m_keyboardPanelKeys.begin(), m_keyboardPanelKeys.end(),
+					[](const KeyboardPanelKey& _key) { return _key.keyCode == g_functionKey; }));
 			return true;
 		}
 		// Firmware handles held buttons; OS repeat must not repeat actions.
@@ -1099,6 +1118,8 @@ namespace mdJucePlugin
 			else if(keyCode == 'M')
 				packet = md::panelPacket(model, model == md::MachineModel::Machinedrum
 					? md::PanelControl::ClassicExtended : md::PanelControl::TrigSelect);
+			else if(keyCode == ']' && model == md::MachineModel::Machinedrum)
+				packet = md::panelPacket(model, md::PanelControl::SynthesisEffectsRouting);
 			else if(keyCode == '[' || keyCode == ']')
 				packet = md::panelPacket(model, keyCode == '['
 					? md::PanelControl::DataPageBackward : md::PanelControl::DataPageForward);
@@ -1111,6 +1132,9 @@ namespace mdJucePlugin
 		}
 		if(!packet && track < 0 && page < 0) return false;
 		m_keyboardPanelKeys.push_back({keyCode, _nativeKeyCode, packet});
+		if(keyCode != g_functionKey && packet)
+			setKeyboardFunction(_modifiers.isShiftDown()
+				&& !_modifiers.isCtrlDown() && !_modifiers.isCommandDown());
 		if(packet)
 		{
 			m_keyboardPanelRows.press(*packet);
@@ -1128,9 +1152,12 @@ namespace mdJucePlugin
 	bool Editor::releaseInactivePanelKeys()
 	{
 		bool released = false;
-		for(size_t i = m_keyboardPanelKeys.size(); i-- > 0;)
+		// Releasing the last target can also remove its implicit FUNCTION owner.
+		// Iterate a snapshot so that paired release cannot invalidate an index.
+		const auto keys = m_keyboardPanelKeys;
+		for(auto it = keys.rbegin(); it != keys.rend(); ++it)
 		{
-			const auto key = m_keyboardPanelKeys[i];
+			const auto& key = *it;
 			bool down = key.keyCode == g_functionKey
 				? juce::ModifierKeys::getCurrentModifiersRealtime().isShiftDown()
 				: juce::KeyPress::isKeyCurrentlyDown(key.keyCode);
@@ -2364,6 +2391,8 @@ namespace mdJucePlugin
 		// start a panel press from keys used in another window or application.
 		releaseInactivePanelKeys();
 		const auto modifiers = juce::ModifierKeys::getCurrentModifiersRealtime();
+		if(!modifiers.isShiftDown())
+			m_mouseOwnsShift = false;
 		if(m_encoderPress.active() && (!modifiers.isAltDown() || !modifiers.isLeftButtonDown()))
 			releaseEncoderPress();
 		// Some plugin hosts can lose the modifier key-up when focus changes. Poll

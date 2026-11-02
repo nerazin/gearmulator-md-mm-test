@@ -131,9 +131,17 @@ int main()
 		auto* panel = editor->getRmlComponent();
 		panel->addToDesktop(0);
 		panel->setVisible(true);
-		panel->grabKeyboardFocus();
+		panel->toFront(true);
+		// Window mapping/focus can be asynchronous under a desktop window manager.
+		// Do not silently skip the modifier path when running without native focus.
+		for(int attempt = 0; attempt < 20 && !panel->hasKeyboardFocus(true); ++attempt)
+		{
+			panel->grabKeyboardFocus();
+			if(!panel->hasKeyboardFocus(true)) juce::Thread::sleep(10);
+		}
 		auto* peer = panel->getPeer();
 		require(peer != nullptr, "native peer missing");
+		require(panel->hasKeyboardFocus(true), "test panel did not acquire native keyboard focus");
 		auto& instrumentation = processor.getPlugin().getRealtimeInstrumentation();
 		instrumentation.setEnabled(true);
 		instrumentation.reset();
@@ -141,6 +149,7 @@ int main()
 		juceRmlUi::RmlInterfaces::ScopedAccess access(*panel);
 		auto& context = *panel->getContext();
 		context.Update();
+		editor->getDocument()->Focus();
 
 		const char* phase = "navigation and mouse chords";
 		const auto press = [&](int _key, int _mods = 0)
@@ -160,6 +169,84 @@ int main()
 			if(_down) context.ProcessMouseButtonDown(0, _mods);
 			else context.ProcessMouseButtonUp(0, _mods);
 		};
+
+		// Exercise the native Shift transition before the Rml mouse event. Passing
+		// KM_SHIFT only to the mouse helper missed the accidental FUNCTION press.
+		phase = "Shift-click trig regression";
+		for(int trig = 0; trig < 16; ++trig)
+		{
+			panel->modifierKeysChanged(juce::ModifierKeys(juce::ModifierKeys::shiftModifier));
+			require(capture.drain().empty(), "bare Shift injected FUNCTION before the mouse click");
+			const auto id = "trigKey" + std::to_string(trig);
+			mouse(id.c_str(), true, Rml::Input::KM_SHIFT);
+			mouse(id.c_str(), false, Rml::Input::KM_SHIFT);
+			capture.drain();
+			Rows held{};
+			held[trig / 8] = static_cast<uint8_t>(1u << (trig % 8));
+			require(capture.rows == held, "Shift-click trig injected FUNCTION instead of a plain trig hold");
+			panel->modifierKeysChanged(juce::ModifierKeys());
+			capture.drain();
+			require(capture.rows == Rows{}, "releasing Shift left a mouse trig held");
+		}
+		// The same collision affected transport, navigation, page and MM track
+		// buttons. Keyboard arrows and encoder switches must remain plain targets
+		// while Shift belongs to a mouse hold (including a multi-trig p-lock).
+		phase = "Shift mouse and keyboard combinations";
+		struct MouseBinding { const char* id; md::PanelControl control; };
+		const MouseBinding mouseBindings[] = {
+			{"trigKey0", md::PanelControl::Trigger1},
+			{"btRec", md::PanelControl::Record}, {"btPlay", md::PanelControl::Play},
+			{"btStop", md::PanelControl::Stop}, {"btUp", md::PanelControl::Up},
+#if defined(MD_KEYBOARD_TEST_MM)
+			{"btDataNext", md::PanelControl::DataPageForward},
+			{"btTrack1", md::PanelControl::Track1}, {"btTrack6", md::PanelControl::Track6},
+#else
+			{"btSynth", md::PanelControl::SynthesisEffectsRouting},
+#endif
+		};
+		for(const auto& binding : mouseBindings)
+		{
+			panel->modifierKeysChanged(juce::ModifierKeys(juce::ModifierKeys::shiftModifier));
+			mouse(binding.id, true, Rml::Input::KM_SHIFT);
+			mouse(binding.id, false, Rml::Input::KM_SHIFT);
+			capture.drain();
+			Rows held{};
+			const auto packet = *md::panelPacket(model, binding.control);
+			held[packet.row - 0x20] = packet.mask;
+			if(binding.control == md::PanelControl::Trigger1)
+			{
+				mouse("trigKey15", true, Rml::Input::KM_SHIFT);
+				mouse("trigKey15", false, Rml::Input::KM_SHIFT);
+				held[1] = 0x80;
+			}
+			capture.drain();
+			require(capture.rows == held, "Shift-click added an unwanted secondary function");
+			for(const int key : {juce::KeyPress::rightKey, juce::KeyPress::F1Key})
+			{
+				press(key, juce::ModifierKeys::shiftModifier);
+				capture.drain();
+				auto combined = held;
+				const auto target = key == juce::KeyPress::rightKey ? expected[1]
+					: *md::panelEncoderPressPacket(model, md::PanelEncoder::DataEntryA);
+				combined[target.row - 0x20] |= target.mask;
+				require(capture.rows == combined, "keyboard target injected FUNCTION into a mouse hold");
+				mdJucePlugin::EditorIdentityTestAccess::release(*editor, key);
+				capture.drain();
+				require(capture.rows == held, "keyboard release disturbed the mouse hold");
+			}
+			mouse("encA", true, Rml::Input::KM_SHIFT | Rml::Input::KM_ALT);
+			capture.drain();
+			auto encoderChord = held;
+			const auto encoder = *md::panelEncoderPressPacket(model, md::PanelEncoder::DataEntryA);
+			encoderChord[encoder.row - 0x20] |= encoder.mask;
+			require(capture.rows == encoderChord, "mouse encoder press added FUNCTION to the hold");
+			mouse("encA", false, Rml::Input::KM_SHIFT | Rml::Input::KM_ALT);
+			capture.drain();
+			require(capture.rows == held, "mouse encoder release disturbed the hold");
+			panel->modifierKeysChanged(juce::ModifierKeys());
+			capture.drain();
+			require(capture.rows == Rows{}, "Shift mouse combination left a stuck control");
+		}
 
 		// Six exact model-specific packets through the native listener, with and
 		// without modifiers. Repeated keydown must not create repeated edges.
@@ -292,7 +379,7 @@ int main()
 			{'j', {0x22, 0x02}}, {'k', {0x22, 0x04}}, {'l', {0x22, 0x08}}, {' ', {0x22, 0x04}},
 			{'o', {0x22, 0x40}}, {'n', {0x22, 0x80}}, {'\\', {0x22, 0x01}}, {'b', {0x24, 0x04}},
 			{'z', {0x23, 0x01}}, {'x', {0x23, 0x02}}, {'c', {0x23, 0x04}}, {'v', {0x23, 0x08}},
-			{'p', {0x22, 0x20}}, {'m', {0x24, 0x01}}};
+			{'p', {0x22, 0x20}}, {'m', {0x24, 0x01}}, {']', {0x22, 0x10}}};
 		constexpr uint8_t encoderRow = 0x25;
 		constexpr int trackCount = 16, pageCount = 3;
 #endif
@@ -301,29 +388,78 @@ int main()
 		for(int i = 0; i < 8; ++i)
 			checkKey(juce::KeyPress::F1Key + i, {encoderRow, static_cast<uint8_t>(1u << i)});
 
-		// Shift alone is a held FUNCTION key, including COPY/CLEAR/PASTE chords.
+		// Shift acquires FUNCTION only with a keyboard target. Cover both release
+		// orders, including removing FUNCTION while Shift itself is still held.
 		phase = "FUNCTION chords";
-		for(int key : {'j', 'k', 'l'})
+		for(bool shiftFirst : {false, true})
+		for(int key : {'j', 'k', 'l', ' ', ']'})
 		{
 			panel->modifierKeysChanged(juce::ModifierKeys(juce::ModifierKeys::shiftModifier));
-			capture.drain();
-			require(capture.rows[function.row - 0x20] == function.mask, "Shift did not press FUNCTION");
+			require(capture.drain().empty(), "bare Shift pressed FUNCTION");
 			press(key, juce::ModifierKeys::shiftModifier);
-			capture.drain();
-			const auto packet = performance[key - 'j'].packet;
+			const auto events = capture.drain();
+			require(events.size() == 2 && events.front() == function, "FUNCTION must precede its keyboard target");
+			const auto packet = std::find_if(std::begin(performance), std::end(performance),
+				[key](const ExpectedKey& binding) { return binding.key == key; })->packet;
 			Rows expectedChord{};
 			expectedChord[function.row - 0x20] |= function.mask;
 			expectedChord[packet.row - 0x20] |= packet.mask;
 			require(capture.rows == expectedChord, "Shift transport chord incorrect");
-			panel->modifierKeysChanged(juce::ModifierKeys());
-			capture.drain();
-			Rows targetOnly{};
-			targetOnly[packet.row - 0x20] = packet.mask;
-			require(capture.rows == targetOnly, "releasing Shift released the target key");
+			press(key == ']' ? '}' : key, juce::ModifierKeys::shiftModifier);
+			require(capture.drain().empty(), "shifted chord auto-repeat duplicated a press");
+			if(shiftFirst)
+			{
+				panel->modifierKeysChanged(juce::ModifierKeys());
+				capture.drain();
+				Rows targetOnly{};
+				targetOnly[packet.row - 0x20] = packet.mask;
+				require(capture.rows == targetOnly, "releasing Shift released the target key");
+			}
 			release(key);
 			capture.drain();
 			require(capture.rows == Rows{}, "Shift chord stuck");
+			panel->modifierKeysChanged(juce::ModifierKeys());
+			require(capture.drain().empty(), "late Shift release emitted a duplicate event");
 		}
+
+		// Switching to a Shift-click must release keyboard FUNCTION before the
+		// mouse target, and other modifier transitions must not bring it back.
+		phase = "keyboard chord to mouse hold";
+		panel->modifierKeysChanged(juce::ModifierKeys(juce::ModifierKeys::shiftModifier));
+		press('k', juce::ModifierKeys::shiftModifier);
+		capture.drain();
+		mouse("trigKey0", true, Rml::Input::KM_SHIFT);
+		const auto handoff = capture.drain();
+		require(!handoff.empty() && handoff.front().row == function.row
+			&& (handoff.front().mask & function.mask) == 0, "mouse target preceded FUNCTION release");
+		mouse("trigKey0", false, Rml::Input::KM_SHIFT);
+		release('k');
+		panel->modifierKeysChanged(juce::ModifierKeys(juce::ModifierKeys::shiftModifier | juce::ModifierKeys::altModifier));
+		panel->modifierKeysChanged(juce::ModifierKeys(juce::ModifierKeys::shiftModifier));
+		press(juce::KeyPress::F1Key, juce::ModifierKeys::shiftModifier);
+		capture.drain();
+		Rows mouseAndEncoder{};
+		mouseAndEncoder[0] = 1;
+		mouseAndEncoder[encoderRow - 0x20] = 1;
+		require(capture.rows == mouseAndEncoder, "modifier transition reintroduced FUNCTION into a trig hold");
+		release(juce::KeyPress::F1Key);
+		panel->modifierKeysChanged(juce::ModifierKeys());
+		capture.drain();
+		require(capture.rows == Rows{}, "keyboard-to-mouse handoff stuck");
+
+		// Multiple keyboard targets retain FUNCTION until the last is released.
+		panel->modifierKeysChanged(juce::ModifierKeys(juce::ModifierKeys::shiftModifier));
+		press('k', juce::ModifierKeys::shiftModifier);
+		press(' ', juce::ModifierKeys::shiftModifier);
+		capture.drain();
+		release('k');
+		capture.drain();
+		require((capture.rows[function.row - 0x20] & function.mask) != 0,
+			"releasing one PLAY alias released FUNCTION too early");
+		release(' ');
+		capture.drain();
+		require(capture.rows == Rows{}, "last PLAY alias left FUNCTION held");
+		panel->modifierKeysChanged(juce::ModifierKeys());
 
 		// A shifted digit must still address the same trig, without repeat edges.
 		panel->modifierKeysChanged(juce::ModifierKeys(juce::ModifierKeys::shiftModifier));
@@ -343,15 +479,17 @@ int main()
 		{
 			mouse("btFunction", true);
 			panel->modifierKeysChanged(juce::ModifierKeys(juce::ModifierKeys::shiftModifier));
+			press('j', juce::ModifierKeys::shiftModifier);
 			capture.drain();
 			if(mouseFirst) mouse("btFunction", false);
-			else panel->modifierKeysChanged(juce::ModifierKeys());
+			else release('j');
 			capture.drain();
 			require(capture.rows[function.row - 0x20] == function.mask, "shared FUNCTION released early");
-			if(mouseFirst) panel->modifierKeysChanged(juce::ModifierKeys());
+			if(mouseFirst) release('j');
 			else mouse("btFunction", false);
 			capture.drain();
 			require(capture.rows == Rows{}, "shared FUNCTION stuck");
+			panel->modifierKeysChanged(juce::ModifierKeys());
 
 			mouse("encA", true, Rml::Input::KM_ALT);
 			press(juce::KeyPress::F1Key);
@@ -412,14 +550,19 @@ int main()
 
 		// Mouse-latched MM banks still finish after a keyboard trig selection.
 #if defined(MD_KEYBOARD_TEST_MM)
-		mouse("btBankA", true);
-		mouse("btBankA", false);
-		press('1');
+		panel->modifierKeysChanged(juce::ModifierKeys(juce::ModifierKeys::shiftModifier));
+		mouse("btBankA", true, Rml::Input::KM_SHIFT);
+		mouse("btBankA", false, Rml::Input::KM_SHIFT);
+		press('1', juce::ModifierKeys::shiftModifier);
 		capture.drain();
-		require(capture.rows[4] == 0x08 && capture.rows[0] == 1, "mouse bank + keyboard trig broken");
+		Rows bankAndTrig{};
+		bankAndTrig[4] = 0x08;
+		bankAndTrig[0] = 1;
+		require(capture.rows == bankAndTrig, "mouse bank + keyboard trig added FUNCTION");
 		release('1');
 		capture.drain();
 		require(capture.rows == Rows{}, "keyboard trig did not release mouse bank latch");
+		panel->modifierKeysChanged(juce::ModifierKeys());
 #endif
 		// Desktop/DAW shortcuts are not new panel bindings.
 		for(int key : {'1', '2', '3', '4', '5', '6', '7', '8', 'Q', 'J'})
@@ -456,8 +599,13 @@ int main()
 		require(capture.rows == Rows{}, "focus loss left a performance key held");
 
 		// An unbound key must not send a machine event.
-		peer->handleKeyPress(juce::KeyPress('9'));
-		require(capture.drain().empty(), "unbound key reached machine");
+		for(int mods : {0, static_cast<int>(juce::ModifierKeys::shiftModifier)})
+		{
+			panel->modifierKeysChanged(juce::ModifierKeys(mods));
+			peer->handleKeyPress(juce::KeyPress('9', juce::ModifierKeys(mods), 0));
+			require(capture.drain().empty(), "unbound key reached machine");
+		}
+		panel->modifierKeysChanged(juce::ModifierKeys());
 #if !defined(MD_KEYBOARD_TEST_MM)
 		// MD has no dedicated track-switch row. Verify the actual status SysEx
 		// reaching a device, rather than just checking that no trig was sent.
