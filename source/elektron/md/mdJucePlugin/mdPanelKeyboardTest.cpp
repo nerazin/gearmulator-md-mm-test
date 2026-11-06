@@ -22,6 +22,13 @@ namespace mdJucePlugin
 	{
 		static void release(Editor& _editor, int _key) { _editor.setPanelKey(_key, false); }
 		static void loseFocus(Editor& _editor) { _editor.globalFocusChanged(nullptr); }
+		static bool poll(Editor& e, int flags) { return e.releaseInactivePanelKeys(juce::ModifierKeys(flags)); }
+		static void queue(Editor& e, md::PanelControl control) { e.queuePanelPulse(control); }
+		static void tickQueue(Editor& e) { e.servicePanelQueue(); }
+		static void acknowledgeQueuedDown(Editor& e)
+		{
+			if(!e.m_panelSteps.empty() && e.m_panelSteps.front().press) e.m_panelSteps.pop_front();
+		}
 		static size_t heldKeys(Editor& _editor) { return _editor.m_keyboardPanelKeys.size(); }
 		static std::optional<int> page(Editor& _editor)
 		{
@@ -388,38 +395,77 @@ int main()
 		for(int i = 0; i < 8; ++i)
 			checkKey(juce::KeyPress::F1Key + i, {encoderRow, static_cast<uint8_t>(1u << i)});
 
-		// Shift acquires FUNCTION only with a keyboard target. Cover both release
-		// orders, including removing FUNCTION while Shift itself is still held.
-		phase = "FUNCTION chords";
-		for(bool shiftFirst : {false, true})
-		for(int key : {'j', 'k', 'l', ' ', ']'})
+		// A physical TEMPO tap has two edges. Only the first tap presses FUNCTION;
+		// in particular MM sends both buttons on one row, MD on separate rows.
+		phase = "tap tempo";
+		const int shift = juce::ModifierKeys::shiftModifier;
+		const auto modifiers = [&](int flags) { panel->modifierKeysChanged(juce::ModifierKeys(flags)); };
+		Rows functionOnly{};
+		functionOnly[function.row - 0x20] = function.mask;
+		const auto tempo = *md::panelPacket(model, md::PanelControl::Tempo);
+		auto tempoDown = tempo;
+		tempoDown.mask |= functionOnly[tempo.row - 0x20];
+		modifiers(shift);
+		require(capture.drain().empty(), "bare Shift pressed FUNCTION");
+		for(int tap = 0; tap < 4; ++tap)
 		{
-			panel->modifierKeysChanged(juce::ModifierKeys(juce::ModifierKeys::shiftModifier));
+			press(tap % 2 ? '\\' : '|', shift);
+			auto edges = capture.drain();
+			if(tap == 0)
+				require(edges == std::vector<md::PanelPacket>{function, tempoDown}, "first tap must press FUNCTION then TEMPO");
+			else
+				require(edges == std::vector<md::PanelPacket>{tempoDown}, "tap re-pressed FUNCTION between beats");
+			press('|', shift);
+			require(capture.drain().empty(), "OS repeat generated an extra tempo tap");
+			// Synthetic key-up: native Shift remains down while the target key is up.
+			require(mdJucePlugin::EditorIdentityTestAccess::poll(*editor, shift), "TEMPO key-up not recognised");
+			require(capture.drain() == std::vector<md::PanelPacket>{{tempo.row, functionOnly[tempo.row - 0x20]}}
+				&& capture.rows == functionOnly, "releasing TEMPO also dropped FUNCTION between beats");
+		}
+		modifiers(0);
+		require(capture.drain() == std::vector<md::PanelPacket>{{function.row, 0}}, "releasing Shift did not end tap tempo");
+
+		// The modifier lifetime is shared by every hardware button mapping.
+		// Exercise each release order, including keys that share FUNCTION's row.
+		phase = "FUNCTION chords";
+		std::vector<ExpectedKey> buttons(std::begin(performance), std::end(performance));
+		for(size_t i = 0; i < keys.size(); ++i) buttons.push_back({keys[i], expected[i]});
+		for(int i = 0; i < 16; ++i)
+			buttons.push_back({trigKeys[i], {static_cast<uint8_t>(0x20 + i / 8), static_cast<uint8_t>(1u << (i % 8))}});
+		for(int i = 0; i < 8; ++i)
+			buttons.push_back({juce::KeyPress::F1Key + i, {encoderRow, static_cast<uint8_t>(1u << i)}});
+		for(bool shiftFirst : {false, true})
+		for(const auto& binding : buttons)
+		{
+			modifiers(shift);
 			require(capture.drain().empty(), "bare Shift pressed FUNCTION");
-			press(key, juce::ModifierKeys::shiftModifier);
+			press(binding.key, shift);
 			const auto events = capture.drain();
-			require(events.size() == 2 && events.front() == function, "FUNCTION must precede its keyboard target");
-			const auto packet = std::find_if(std::begin(performance), std::end(performance),
-				[key](const ExpectedKey& binding) { return binding.key == key; })->packet;
-			Rows expectedChord{};
-			expectedChord[function.row - 0x20] |= function.mask;
+			auto expectedChord = functionOnly;
+			const auto packet = binding.packet;
 			expectedChord[packet.row - 0x20] |= packet.mask;
-			require(capture.rows == expectedChord, "Shift transport chord incorrect");
-			press(key == ']' ? '}' : key, juce::ModifierKeys::shiftModifier);
+			require(events.size() == 2 && events.front() == function && capture.rows == expectedChord,
+				"FUNCTION must precede its keyboard target");
+			press(binding.key == ']' ? '}' : binding.key, shift);
 			require(capture.drain().empty(), "shifted chord auto-repeat duplicated a press");
 			if(shiftFirst)
 			{
-				panel->modifierKeysChanged(juce::ModifierKeys());
+				modifiers(0);
 				capture.drain();
 				Rows targetOnly{};
 				targetOnly[packet.row - 0x20] = packet.mask;
 				require(capture.rows == targetOnly, "releasing Shift released the target key");
+				release(binding.key);
 			}
-			release(key);
+			else
+			{
+				release(binding.key);
+				capture.drain();
+				require(capture.rows == functionOnly, "target release interrupted FUNCTION");
+				modifiers(0);
+			}
 			capture.drain();
 			require(capture.rows == Rows{}, "Shift chord stuck");
-			panel->modifierKeysChanged(juce::ModifierKeys());
-			require(capture.drain().empty(), "late Shift release emitted a duplicate event");
 		}
 
 		// Switching to a Shift-click must release keyboard FUNCTION before the
@@ -447,7 +493,97 @@ int main()
 		capture.drain();
 		require(capture.rows == Rows{}, "keyboard-to-mouse handoff stuck");
 
-		// Multiple keyboard targets retain FUNCTION until the last is released.
+		// From the gap between taps, a mouse gesture, host shortcut, Escape or
+		// focus loss must not leave FUNCTION held. A missed Shift-up is recoverable.
+		using Input = mdJucePlugin::EditorIdentityTestAccess;
+		const auto betweenTaps = [&]
+		{
+			modifiers(shift);
+			press('\\', shift);
+			release('\\');
+			capture.drain();
+			require(capture.rows == functionOnly, "test did not reach the gap between taps");
+		};
+		phase = "ending a held FUNCTION";
+		for(const int mouseMods : {0, static_cast<int>(Rml::Input::KM_SHIFT)})
+		{
+			betweenTaps();
+			mouse("trigKey0", true, mouseMods);
+			const auto edges = capture.drain();
+			require(edges == std::vector<md::PanelPacket>{{function.row, 0}, {0x20, 1}},
+				"click after a tap reached the trig before releasing FUNCTION");
+			mouse("trigKey0", false, mouseMods);
+			modifiers(0);
+			capture.drain();
+			require(capture.rows == Rows{}, "click after a tap stuck");
+		}
+		for(const int reserved : {juce::ModifierKeys::ctrlModifier, juce::ModifierKeys::commandModifier})
+		{
+			betweenTaps();
+			peer->handleKeyPress(juce::KeyPress('9', juce::ModifierKeys(shift | reserved), 0));
+			capture.drain();
+			require(capture.rows == Rows{}, "host shortcut inherited FUNCTION after a missed modifier event");
+			modifiers(0);
+		}
+		for(const int flags : {0, shift | juce::ModifierKeys::ctrlModifier, shift | juce::ModifierKeys::commandModifier})
+		{
+			betweenTaps();
+			require(Input::poll(*editor, flags), "poll missed the end of the modifier hold");
+			capture.drain();
+			require(capture.rows == Rows{}, "reconciliation left FUNCTION held");
+			modifiers(0);
+		}
+		for(bool escape : {false, true})
+		{
+			betweenTaps();
+			if(escape) press(juce::KeyPress::escapeKey, shift);
+			else Input::loseFocus(*editor);
+			capture.drain();
+			require(capture.rows == Rows{} && !editor->settingsOpened(), "cancelling between taps left a hold or opened settings");
+			modifiers(0);
+		}
+
+		// Direct page shortcuts must never become FUNCTION+page (MD: LFO).
+		// Cover a keyboard or mouse FUNCTION owner and a held page button.
+		const auto pageControl = model == md::MachineModel::Machinedrum
+			? md::PanelControl::SynthesisEffectsRouting : md::PanelControl::DataPageForward;
+		const auto pagePacket = *md::panelPacket(model, pageControl);
+		const char* pageButton = model == md::MachineModel::Machinedrum ? "btSynth" : "btDataNext";
+		phase = "queued page shortcuts";
+		for(int owner = 0; owner < 3; ++owner)
+		{
+			if(owner == 0) betweenTaps();
+			else mouse(owner == 1 ? "btFunction" : pageButton, true);
+			capture.drain();
+			Input::queue(*editor, pageControl);
+			Input::tickQueue(*editor);
+			require(capture.drain().empty(), "page shortcut collided with a held panel control");
+			if(owner == 0) modifiers(0);
+			else mouse(owner == 1 ? "btFunction" : pageButton, false);
+			capture.drain();
+			Input::tickQueue(*editor);
+			require(capture.drain() == std::vector<md::PanelPacket>{pagePacket}, "page shortcut did not resume as a plain press");
+			Input::loseFocus(*editor);
+			capture.drain();
+			Input::tickQueue(*editor);
+			require(capture.drain().empty(), "cancelled page pulse resumed after focus loss");
+		}
+		Input::queue(*editor, pageControl);
+		Input::tickQueue(*editor);
+		require(capture.drain() == std::vector<md::PanelPacket>{pagePacket}, "first page pulse was not sent");
+		// Without firmware the send is recorded but there is no FIFO to acknowledge
+		// it. Advance to the queued up if the observed down is still awaiting a retry.
+		Input::acknowledgeQueuedDown(*editor);
+		mouse(pageButton, true);
+		capture.drain();
+		Input::tickQueue(*editor);
+		require(capture.drain() == std::vector<md::PanelPacket>{pagePacket}, "queued page release cut off a real mouse hold");
+		mouse(pageButton, false);
+		Input::loseFocus(*editor);
+		capture.drain();
+		require(capture.rows == Rows{}, "cancelling overlapping page controls left a hold");
+
+		// Releasing either PLAY alias leaves the other owner intact.
 		panel->modifierKeysChanged(juce::ModifierKeys(juce::ModifierKeys::shiftModifier));
 		press('k', juce::ModifierKeys::shiftModifier);
 		press(' ', juce::ModifierKeys::shiftModifier);
@@ -458,8 +594,10 @@ int main()
 			"releasing one PLAY alias released FUNCTION too early");
 		release(' ');
 		capture.drain();
-		require(capture.rows == Rows{}, "last PLAY alias left FUNCTION held");
-		panel->modifierKeysChanged(juce::ModifierKeys());
+		require(capture.rows == functionOnly, "last PLAY alias released Shift or left PLAY held");
+		modifiers(0);
+		capture.drain();
+		require(capture.rows == Rows{}, "Shift release left FUNCTION held");
 
 		// A shifted digit must still address the same trig, without repeat edges.
 		panel->modifierKeysChanged(juce::ModifierKeys(juce::ModifierKeys::shiftModifier));
@@ -482,11 +620,12 @@ int main()
 			press('j', juce::ModifierKeys::shiftModifier);
 			capture.drain();
 			if(mouseFirst) mouse("btFunction", false);
-			else release('j');
+			else modifiers(0);
 			capture.drain();
 			require(capture.rows[function.row - 0x20] == function.mask, "shared FUNCTION released early");
-			if(mouseFirst) release('j');
+			if(mouseFirst) modifiers(0);
 			else mouse("btFunction", false);
+			release('j');
 			capture.drain();
 			require(capture.rows == Rows{}, "shared FUNCTION stuck");
 			panel->modifierKeysChanged(juce::ModifierKeys());

@@ -31,6 +31,7 @@ available for desktop switching.
 | P | PATTERN/SONG | SONG MODE |
 | N | SCALE / pattern page | SCALE / pattern page |
 | Backslash (\) | TEMPO | TEMPO |
+| Hold Shift and tap backslash | Tap tempo | Tap tempo |
 | B | Bank group | Bank group |
 | Z X C V | Bank buttons A/E, B/F, C/G, D/H | Same |
 | A S D | Synthesis, Effects, Routing pages | Synthesis, Amplification, Filter pages |
@@ -52,14 +53,16 @@ The bindings work throughout the emulated machine's pages while its panel has
 keyboard focus, including with mouse-held FUNCTION, COPY, CLEAR and PASTE.
 Shift alone does not press FUNCTION: Shift-click holds only the clicked panel
 button, so trigs can be held for parameter locks without selecting another sound.
-Hold Shift and press a keyboard button for a FUNCTION chord. The implicit
-FUNCTION releases when Shift or the last keyboard button is released.
+Hold Shift and press a panel button on the keyboard to engage FUNCTION. It stays
+held between button presses until you release Shift. For tap tempo, keep Shift
+down and tap backslash once per beat; release Shift to finish.
 After a Shift-click, Shift remains reserved for mouse holds until it is released;
 keyboard arrows, trigs and encoder switches can then be used with those holds
 without adding FUNCTION. To hold FUNCTION for a mouse action, Shift-click the
 on-screen FUNCTION button. Secondary actions follow the firmware and current
-screen. MD track selection and direct
-page selection use the same actions as their clickable track/page labels.
+screen. MD track selection and direct page selection use the same actions as
+their clickable labels. Automatic page and mode changes wait for FUNCTION and
+the required page/mode button to be free before sending a press.
 
 Each key keeps its binding until released, including when Shift or Option is
 released first. Mouse holds, keyboard holds and the K/Space aliases own their

@@ -134,7 +134,7 @@ namespace mdJucePlugin
 		void setKeyboardFunction(bool _pressed);
 		bool setPanelKey(int _keyCode, bool _pressed, juce::ModifierKeys _modifiers = {},
 			int _nativeKeyCode = -1);
-		bool releaseInactivePanelKeys();
+		bool releaseInactivePanelKeys(juce::ModifierKeys _modifiers);
 		void queuePanelPulse(md::PanelControl _control, int _count = 1);
 		void servicePanelQueue();
 		void servicePanelNavigation();
@@ -244,6 +244,7 @@ namespace mdJucePlugin
 			bool press = false;
 		};
 		std::deque<PanelStep> m_panelSteps;
+		std::optional<md::PanelPacket> m_navigationPress;
 		int m_panelSettleTicks = 0;
 		panelAffordances::PendingTarget<panelAffordances::g_machinedrumDataPages.size()>
 			m_machinedrumDataPageTarget;

@@ -106,6 +106,11 @@ namespace mdJucePlugin
 			{ 'V', md::PanelControl::BankD },
 		};
 
+		bool keyboardFunctionModifiers(const juce::ModifierKeys _mods)
+		{
+			return _mods.isShiftDown() && !_mods.isCtrlDown() && !_mods.isCommandDown();
+		}
+
 		int panelKeyCode(int _keyCode)
 		{
 			if(_keyCode >= 'a' && _keyCode <= 'z')
@@ -205,7 +210,6 @@ namespace mdJucePlugin
 		if(auto* const panel = getRmlComponent())
 			panel->removeKeyListener(this);
 		juce::Desktop::getInstance().removeFocusChangeListener(this);
-		m_panelSteps.clear();
 		cancelPanelInputGestures();
 		stopTimer(g_presentationTimerId);
 		stopTimer(g_panelTimerId);
@@ -224,8 +228,10 @@ namespace mdJucePlugin
 
 	bool Editor::sendPanelEvent(const uint8_t _command, const uint8_t _argument) const
 	{
+		const auto navigationMask = m_navigationPress && m_navigationPress->row == _command
+			? m_navigationPress->mask : 0;
 		const auto argument = static_cast<uint8_t>(
-			_argument | m_keyboardPanelRows.mask(_command));
+			_argument | m_keyboardPanelRows.mask(_command) | navigationMask);
 		auto& plugin = getProcessor().getPlugin();
 		auto& diagnostics = plugin.getRealtimeInstrumentation();
 		const auto model = static_cast<uint32_t>(getModel());
@@ -658,8 +664,9 @@ namespace mdJucePlugin
 				[this](const Rml::Event& _event)
 				{
 					m_mouseOwnsShift = _event.GetParameter<int>("shift_key", 0) != 0;
-					if(m_mouseOwnsShift)
-						setKeyboardFunction(false);
+					// A shifted click takes over Shift; a plain click also clears a
+					// stale keyboard hold if the host missed the Shift-up.
+					setKeyboardFunction(false);
 				}, true); // Release keyboard FUNCTION before the clicked target is pressed.
 			juceRmlUi::EventListener::Add(document, Rml::EventId::Keyup,
 				[this](const Rml::Event& _event)
@@ -681,7 +688,7 @@ namespace mdJucePlugin
 						|| (m_keyboardPanelKeys.empty()
 							&& m_shiftPanelLatch.empty() && m_activePanelButtons.empty()
 							&& m_panelGesturePackets.empty() && !m_patternBankPacket
-							&& !m_encoderPress.active() && !m_lcdDragGesture.active()))
+							&& !m_encoderPress.active() && !m_lcdDragGesture.active() && m_panelSteps.empty()))
 						return;
 					_event.StopPropagation();
 					cancelPanelInputGestures();
@@ -931,6 +938,12 @@ namespace mdJucePlugin
 
 	void Editor::cancelPanelInputGestures()
 	{
+		// Do not resume a deferred page request after Escape or focus loss.
+		m_panelSteps.clear();
+		m_panelSettleTicks = 0;
+		m_machinedrumDataPageTarget = {};
+		m_monomachineDataPageTarget = {};
+		m_monomachineTrigModeTarget = {};
 		cancelLcdGesture();
 		endPanelGesture();
 		releasePanelButtonGestures();
@@ -972,8 +985,10 @@ namespace mdJucePlugin
 	{
 		while(!m_keyboardPanelKeys.empty())
 			setPanelKey(m_keyboardPanelKeys.back().keyCode, false);
+		const auto navigationPress = m_navigationPress;
+		m_navigationPress.reset();
 		for(uint8_t row = 0x20; row <= 0x26; ++row)
-			if(m_panelRows.mask(row) != 0)
+			if(m_panelRows.mask(row) != 0 || (navigationPress && navigationPress->row == row))
 				(void)sendPanelEvent(row, 0);
 		m_panelRows.reset();
 	}
@@ -1007,9 +1022,7 @@ namespace mdJucePlugin
 
 	void Editor::setKeyboardFunction(const bool _pressed)
 	{
-		const bool hasTarget = std::any_of(m_keyboardPanelKeys.begin(), m_keyboardPanelKeys.end(),
-			[](const KeyboardPanelKey& _key) { return _key.keyCode != g_functionKey && _key.packet.has_value(); });
-		setPanelKey(g_functionKey, _pressed && !m_mouseOwnsShift && hasTarget
+		setPanelKey(g_functionKey, _pressed && !m_mouseOwnsShift
 			&& panelKeyboardAllowed() && getRmlComponent()->hasKeyboardFocus(true));
 	}
 
@@ -1022,12 +1035,14 @@ namespace mdJucePlugin
 		if(_key.getKeyCode() == juce::KeyPress::escapeKey
 			&& (!m_keyboardPanelKeys.empty() || !m_shiftPanelLatch.empty()
 				|| !m_activePanelButtons.empty() || !m_panelGesturePackets.empty()
-				|| m_patternBankPacket || m_encoderPress.active() || m_lcdDragGesture.active()))
+				|| m_patternBankPacket || m_encoderPress.active() || m_lcdDragGesture.active() || !m_panelSteps.empty()))
 		{
 			cancelPanelInputGestures();
 			return true;
 		}
 		const auto modifiers = _key.getModifiers();
+		if(!keyboardFunctionModifiers(modifiers))
+			setKeyboardFunction(false); // Also reconcile unbound/host shortcuts after a missed modifier event.
 		// Intercept before RmlUi uses arrows on a focused knob or Enter on the
 		// last mouse target. Record the native key so modifier changes cannot
 		// interrupt a hold on macOS (JUCE clears its key cache on those changes).
@@ -1040,7 +1055,7 @@ namespace mdJucePlugin
 
 	bool Editor::keyStateChanged(const bool _isKeyDown, juce::Component*)
 	{
-		return !_isKeyDown && releaseInactivePanelKeys();
+		return !_isKeyDown && releaseInactivePanelKeys(juce::ModifierKeys::getCurrentModifiersRealtime());
 	}
 
 	bool Editor::setPanelKey(const int _rawKeyCode, const bool _pressed,
@@ -1065,9 +1080,6 @@ namespace mdJucePlugin
 				if(getModel() == md::MachineModel::Monomachine && packet->row <= 0x21)
 					releasePatternBankLatch();
 			}
-			if(keyCode != g_functionKey)
-				setKeyboardFunction(std::any_of(m_keyboardPanelKeys.begin(), m_keyboardPanelKeys.end(),
-					[](const KeyboardPanelKey& _key) { return _key.keyCode == g_functionKey; }));
 			return true;
 		}
 		// Firmware handles held buttons; OS repeat must not repeat actions.
@@ -1131,10 +1143,11 @@ namespace mdJucePlugin
 			}
 		}
 		if(!packet && track < 0 && page < 0) return false;
+		// Once a hardware button claims Shift, FUNCTION belongs to Shift itself.
+		// Releasing TEMPO (or any other target) must not interrupt a series of taps.
+		if(keyCode != g_functionKey && packet && keyboardFunctionModifiers(_modifiers))
+			setKeyboardFunction(true);
 		m_keyboardPanelKeys.push_back({keyCode, _nativeKeyCode, packet});
-		if(keyCode != g_functionKey && packet)
-			setKeyboardFunction(_modifiers.isShiftDown()
-				&& !_modifiers.isCtrlDown() && !_modifiers.isCommandDown());
 		if(packet)
 		{
 			m_keyboardPanelRows.press(*packet);
@@ -1149,22 +1162,25 @@ namespace mdJucePlugin
 		return true;
 	}
 
-	bool Editor::releaseInactivePanelKeys()
+	bool Editor::releaseInactivePanelKeys(const juce::ModifierKeys _modifiers)
 	{
-		bool released = false;
-		// Releasing the last target can also remove its implicit FUNCTION owner.
-		// Iterate a snapshot so that paired release cannot invalidate an index.
-		const auto keys = m_keyboardPanelKeys;
-		for(auto it = keys.rbegin(); it != keys.rend(); ++it)
+		if(m_keyboardPanelKeys.empty()) return false;
+		if(!panelKeyboardAllowed() || !getRmlComponent()->hasKeyboardFocus(true))
 		{
-			const auto& key = *it;
+			cancelPanelInputGestures();
+			return true;
+		}
+		bool released = false;
+		for(auto i = m_keyboardPanelKeys.size(); i-- > 0;)
+		{
+			const auto& key = m_keyboardPanelKeys[i];
 			bool down = key.keyCode == g_functionKey
-				? juce::ModifierKeys::getCurrentModifiersRealtime().isShiftDown()
+				? keyboardFunctionModifiers(_modifiers)
 				: juce::KeyPress::isKeyCurrentlyDown(key.keyCode);
 #if JUCE_MAC
 			if(key.nativeKeyCode >= 0) down = isPanelNativeKeyDown(key.nativeKeyCode);
 #endif
-			if(!down || !panelKeyboardAllowed())
+			if(!down)
 			{
 				setPanelKey(key.keyCode, false);
 				released = true;
@@ -1202,10 +1218,23 @@ namespace mdJucePlugin
 
 		const auto step = m_panelSteps.front();
 
-		const auto combined = step.press ? m_panelRows.press(step.packet) : m_panelRows.release(step.packet);
-		// Navigation pulses are retryable: do not advance to the matching release
-		// until this row state actually entered the bounded FIFO.
-		if(!sendPanelEvent(combined.row, combined.mask))
+		if(step.press && !m_navigationPress)
+		{
+			// Direct page/mode selection uses unmodified panel presses. A queued
+			// SYNTHESIS press under FUNCTION, for example, would open the MD LFO.
+			const auto held = [this](const md::PanelPacket& p)
+			{
+				return ((m_keyboardPanelRows.mask(p.row) | m_panelRows.mask(p.row)) & p.mask) != 0;
+			};
+			const auto function = md::panelPacket(getModel(), md::PanelControl::Function);
+			if((function && held(*function)) || held(step.packet)) return;
+		}
+		// The queued pulse owns its bit independently: its release must preserve
+		// a mouse or keyboard press on the same button received in the meantime.
+		// The FIFO retains rejected row states for recovery. Keep that requested
+		// state authoritative during retries and clear it explicitly on cancellation.
+		m_navigationPress = step.press ? std::optional{step.packet} : std::nullopt;
+		if(!sendPanelEvent(step.packet.row, m_panelRows.mask(step.packet.row)))
 			return;
 		m_panelSteps.pop_front();
 
@@ -2389,16 +2418,15 @@ namespace mdJucePlugin
 		const auto nowMilliseconds = juce::Time::getMillisecondCounterHiRes();
 		// Hosts can miss a native key-up. Only release existing holds here; never
 		// start a panel press from keys used in another window or application.
-		releaseInactivePanelKeys();
 		const auto modifiers = juce::ModifierKeys::getCurrentModifiersRealtime();
+		releaseInactivePanelKeys(modifiers);
 		if(!modifiers.isShiftDown())
 			m_mouseOwnsShift = false;
 		if(m_encoderPress.active() && (!modifiers.isAltDown() || !modifiers.isLeftButtonDown()))
 			releaseEncoderPress();
 		// Some plugin hosts can lose the modifier key-up when focus changes. Poll
 		// native state as a fail-safe so no panel row remains held indefinitely.
-		if(!m_shiftPanelLatch.empty()
-			&& !juce::ModifierKeys::getCurrentModifiersRealtime().isShiftDown())
+		if(!m_shiftPanelLatch.empty() && !modifiers.isShiftDown())
 			releasePanelButtonGestures();
 
 		const auto hadFrontPanelSnapshot = m_frontPanelSnapshotValid;
