@@ -58,6 +58,13 @@ namespace juceRmlUi
 					[](id, SEL, NSGestureRecognizer*) -> BOOL { return YES; });
 				addMethod(@selector(deliverPanelTouches:), [](id self, SEL, id)
 					{ if(auto* p = owner(self)) p->deliver(); });
+				// Required for custom recognizers built with the macOS 27 SDK.
+				// Panel routing uses each contact; AppKit callers get the latest one.
+				addMethod(@selector(locationInView:), [](id self, SEL, NSView* view) -> NSPoint
+					{
+						if(auto* p = owner(self)) return [p->m_view convertPoint:p->m_lastLocation toView:view];
+						return NSZeroPoint;
+					});
 				addMethod(@selector(panelTouchWindowInactive:), [](id self, SEL, NSNotification* notification)
 					{
 						if(auto* p = owner(self))
@@ -92,6 +99,7 @@ namespace juceRmlUi
 				|| !m_component.getLocalBounds().toFloat().contains(position(touch))) return false;
 			if(![m_identities objectForKey:[touch identity]])
 				[m_identities setObject:@(++m_nextId) forKey:[touch identity]];
+			m_lastLocation = [touch locationInView:m_view];
 			return true;
 		}
 		void collect(NSEvent* event, NSTouchPhase phase, TouchEvent::Phase outputPhase)
@@ -100,6 +108,7 @@ namespace juceRmlUi
 			{
 				NSNumber* identity = [m_identities objectForKey:[touch identity]];
 				if(!identity) continue; // another panel sharing this peer
+				m_lastLocation = [touch locationInView:m_view];
 				m_pending.push_back({[identity unsignedLongLongValue], outputPhase, position(touch)});
 				if(outputPhase == TouchEvent::Phase::End) [m_identities removeObjectForKey:[touch identity]];
 			}
@@ -165,7 +174,8 @@ namespace juceRmlUi
 			[[NSNotificationCenter defaultCenter] removeObserver:m_recognizer];
 			[m_view removeGestureRecognizer:m_recognizer];
 #if defined(__MAC_OS_X_VERSION_MAX_ALLOWED) && __MAC_OS_X_VERSION_MAX_ALLOWED >= 270000
-			if(@available(macOS 27.0, *)) [m_view setExclusiveGestureBehavior:m_oldExclusiveBehavior];
+			if(@available(macOS 27.0, *))
+				[m_view setExclusiveGestureBehavior:static_cast<NSViewExclusiveGestureBehavior>(m_oldExclusiveBehavior)];
 #endif
 			[m_recognizer release];
 			m_recognizer = nil;
@@ -180,10 +190,13 @@ namespace juceRmlUi
 		NSView* m_view = nil;
 		NSGestureRecognizer* m_recognizer = nil;
 		NSMutableDictionary* m_identities = nil;
+		NSPoint m_lastLocation = NSZeroPoint;
 		uint64_t m_nextId = uint64_t{1} << 63;
 		std::vector<TouchEvent> m_pending;
 #if defined(__MAC_OS_X_VERSION_MAX_ALLOWED) && __MAC_OS_X_VERSION_MAX_ALLOWED >= 270000
-		NSViewExclusiveGestureBehavior m_oldExclusiveBehavior = NSViewExclusiveGestureBehaviorInherit;
+		// Keep the SDK 27 enum inside availability-guarded calls; older systems
+		// still load the plug-in and use their existing mouse/keyboard path.
+		NSInteger m_oldExclusiveBehavior = 0;
 #endif
 	};
 
