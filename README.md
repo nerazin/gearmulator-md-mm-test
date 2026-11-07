@@ -49,6 +49,11 @@ Mac, Option is the Alt key, and Fn may be needed to send F1–F8 if the function
 row is assigned to system controls. Encoder keys press switches; the existing
 mouse controls still turn the encoders.
 
+Held keys show the same press as a mouse hold on the panel. F1–F8 shade the
+corresponding encoder, and direct page or MD track selection highlights its
+label. RECORD turns pale coral with a dark border while held; the separate
+recording LED continues to show the machine’s recording state.
+
 The bindings work throughout the emulated machine's pages while its panel has
 keyboard focus, including with mouse-held FUNCTION, COPY, CLEAR and PASTE.
 Shift alone does not press FUNCTION: Shift-click holds only the clicked panel
@@ -72,7 +77,7 @@ settings and popup menus keep their normal keys. Other than the original six
 navigation/YES/NO keys, Control/Command combinations are not panel shortcuts.
 
 In a DAW, give the plug-in window keyboard focus and enable sending keys to the
-plug-in if the host requires it. The emulation, audio and skins are unchanged
+plug-in if the host requires it. The emulation and audio are unchanged
 from PR #100. The original project's README follows.
 
 ---

@@ -6,6 +6,7 @@
 #include <initializer_list>
 #include <memory>
 #include <optional>
+#include <string>
 #include <vector>
 
 #include "jucePluginEditorLib/pluginEditor.h"
@@ -132,6 +133,7 @@ namespace mdJucePlugin
 		bool panelKeyboardAllowed();
 		void panelModifiersChanged(const Rml::Event& _event);
 		void setKeyboardFunction(bool _pressed);
+		void refreshKeyboardFeedback(const std::string& id);
 		bool setPanelKey(int _keyCode, bool _pressed, juce::ModifierKeys _modifiers = {},
 			int _nativeKeyCode = -1);
 		bool releaseInactivePanelKeys(juce::ModifierKeys _modifiers);
@@ -218,6 +220,7 @@ namespace mdJucePlugin
 			int keyCode;
 			int nativeKeyCode;
 			std::optional<md::PanelPacket> packet;
+			std::string feedbackId;
 		};
 		std::vector<KeyboardPanelKey> m_keyboardPanelKeys;
 		// Once Shift is used for a mouse gesture, reserve it for that gesture

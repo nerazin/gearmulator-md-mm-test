@@ -153,6 +153,8 @@ namespace mdJucePlugin
 		constexpr int g_panelTimerIntervalMilliseconds = 33;
 		constexpr size_t g_ledTransitionBatchSize = 256;
 
+		constexpr const char* g_encoderIds[] = {"encA", "encB", "encC", "encD", "encE", "encF", "encG", "encH"};
+
 		constexpr PanelButton g_panelButtons[] =
 		{
 			{ "trigKey0", md::PanelControl::Trigger1 }, { "trigKey1", md::PanelControl::Trigger2 },
@@ -195,6 +197,26 @@ namespace mdJucePlugin
 			{ "btTrack5", md::PanelControl::Track5 },
 			{ "btTrack6", md::PanelControl::Track6 },
 		};
+		// Use the same model-specific packet/element bindings as the mouse. Direct
+		// track and page shortcuts have a printed label rather than a switch.
+		std::string keyboardFeedbackId(md::MachineModel model, const std::optional<md::PanelPacket>& packet, int track, int page)
+		{
+			if(packet)
+			{
+				for(const auto& button : g_panelButtons)
+					if(md::panelPacket(model, button.control) == packet) return button.id;
+				for(size_t i = 0; i < std::size(g_encoderIds); ++i)
+					if(md::panelEncoderPressPacket(model, static_cast<md::PanelEncoder>(i)) == packet)
+						return g_encoderIds[i];
+			}
+			else if(track >= 0)
+				return panelAffordances::g_trackLabelPrefix + std::to_string(track);
+			else if(page >= 0)
+				return model == md::MachineModel::Machinedrum ? panelAffordances::g_machinedrumDataPages[page]
+					: panelAffordances::g_monomachineDataPages[page];
+			return {};
+		}
+
 	}
 
 	Editor::Editor(jucePluginEditorLib::Processor& _processor, const jucePluginEditorLib::Skin& _skin)
@@ -1058,6 +1080,23 @@ namespace mdJucePlugin
 		return !_isKeyDown && releaseInactivePanelKeys(juce::ModifierKeys::getCurrentModifiersRealtime());
 	}
 
+	void Editor::refreshKeyboardFeedback(const std::string& id)
+	{
+		auto* panel = getRmlComponent();
+		if(!panel || id.empty()) return;
+		juceRmlUi::RmlInterfaces::ScopedAccess access(*panel);
+		auto* element = findChild(id, false);
+		if(!element) return;
+
+		const bool down = std::any_of(m_keyboardPanelKeys.begin(), m_keyboardPanelKeys.end(),
+			[&id](const KeyboardPanelKey& key) { return key.feedbackId == id; });
+		if(element->IsClassSet("keyboardHeld") == down) return;
+		// :checked belongs to the mouse latch; changing it here would block a
+		// real mouse-down on the same button. Share only the skin's press style.
+		element->SetClass("keyboardHeld", down);
+		panel->enqueueUpdateOnce();
+	}
+
 	bool Editor::setPanelKey(const int _rawKeyCode, const bool _pressed,
 		const juce::ModifierKeys _modifiers, const int _nativeKeyCode)
 	{
@@ -1068,7 +1107,9 @@ namespace mdJucePlugin
 		{
 			if(held == m_keyboardPanelKeys.end()) return false;
 			const auto packet = held->packet;
+			const auto feedbackId = std::move(held->feedbackId);
 			m_keyboardPanelKeys.erase(held);
+			refreshKeyboardFeedback(feedbackId);
 			// A key keeps the binding it acquired on keydown, even if Option was
 			// released first. Aliases (K/Space) must also own a row bit separately.
 			m_keyboardPanelRows.reset();
@@ -1147,7 +1188,8 @@ namespace mdJucePlugin
 		// Releasing TEMPO (or any other target) must not interrupt a series of taps.
 		if(keyCode != g_functionKey && packet && keyboardFunctionModifiers(_modifiers))
 			setKeyboardFunction(true);
-		m_keyboardPanelKeys.push_back({keyCode, _nativeKeyCode, packet});
+		m_keyboardPanelKeys.push_back({keyCode, _nativeKeyCode, packet, keyboardFeedbackId(model, packet, track, page)});
+		refreshKeyboardFeedback(m_keyboardPanelKeys.back().feedbackId);
 		if(packet)
 		{
 			m_keyboardPanelRows.press(*packet);
@@ -1396,11 +1438,9 @@ namespace mdJucePlugin
 
 	void Editor::createEncoders()
 	{
-		static const char* const ids[8] = { "encA","encB","encC","encD","encE","encF","encG","encH" };
-
 		for(uint32_t i=0; i<8; ++i)
 		{
-			auto* k = findChild<juceRmlUi::ElemKnob>(ids[i], false);
+			auto* k = findChild<juceRmlUi::ElemKnob>(g_encoderIds[i], false);
 			m_encoders[i] = k;
 			configureEncoder(k, static_cast<md::PanelEncoder>(i), m_encLast[i], m_encAccum[i]);
 		}

@@ -4,6 +4,7 @@
 #include "juceRmlUi/juceRmlComponent.h"
 #include "juceRmlUi/rmlInterfaces.h"
 #include "RmlUi/Core/Context.h"
+#include "RmlUi/Core/ComputedValues.h"
 #include "RmlUi/Core/ElementDocument.h"
 #include "synthLib/realtimeInstrumentation.h"
 #include "synthLib/device.h"
@@ -14,7 +15,16 @@
 #include <cstdio>
 #include <stdexcept>
 #include <string>
+#include <tuple>
 #include <vector>
+
+namespace juceRmlUi
+{
+	struct RenderingTestAccess
+	{
+		static void update(RmlComponent& panel) { panel.update(); }
+	};
+}
 
 namespace mdJucePlugin
 {
@@ -176,6 +186,29 @@ int main()
 			if(_down) context.ProcessMouseButtonDown(0, _mods);
 			else context.ProcessMouseButtonUp(0, _mods);
 		};
+		const auto element = [&](const std::string& id)
+		{
+			auto* result = editor->getDocument()->GetElementById(id);
+			if(!result) throw std::runtime_error("feedback element missing: " + id);
+			return result;
+		};
+		const auto feedback = [&](const std::string& id, bool down)
+		{
+			if(element(id)->IsClassSet("keyboardHeld") != down)
+				throw std::runtime_error("wrong keyboard feedback on " + id + " during " + phase);
+		};
+		const auto appearance = [&](const std::string& id)
+		{
+			context.Update();
+			const auto& style = element(id)->GetComputedValues();
+			return std::make_tuple(style.background_color(), style.color(), style.opacity());
+		};
+		const auto noKeyboardFeedback = [&]
+		{
+			Rml::ElementList held;
+			editor->getDocument()->GetElementsByClassName(held, "keyboardHeld");
+			require(held.empty(), "cancelled or rejected key left visual feedback");
+		};
 
 		// Exercise the native Shift transition before the Rml mouse event. Passing
 		// KM_SHIFT only to the mouse helper missed the accidental FUNCTION press.
@@ -261,13 +294,16 @@ int main()
 			juce::ModifierKeys::altModifier | juce::ModifierKeys::leftButtonModifier})
 			for(size_t i = 0; i < keys.size(); ++i)
 			{
+				const char* ids[] = {"btLeft", "btRight", "btDown", "btUp", "btEnter", "btExit"};
 				press(keys[i], mods);
+				feedback(ids[i], true);
 				require(capture.drain() == std::vector<md::PanelPacket>{expected[i]}, "wrong key mapping");
 				press(keys[i], mods);
 				require(capture.drain().empty(), "OS auto-repeat duplicated a press");
 				// Synthetic key events do not alter native key state, so JUCE's
 				// key-up callback should observe this key as released.
 				require(peer->handleKeyUpOrDown(false), "key-up was not handled");
+				feedback(ids[i], false);
 				require(capture.drain() == std::vector<md::PanelPacket>{{expected[i].row, 0}},
 					"key release missing");
 			}
@@ -347,53 +383,126 @@ int main()
 		mdJucePlugin::EditorIdentityTestAccess::loseFocus(*editor);
 		capture.drain();
 		require(capture.rows == Rows{}, "focus loss left buttons held");
+		noKeyboardFeedback();
 
 		press(juce::KeyPress::upKey);
 		capture.drain();
 		peer->handleKeyPress(juce::KeyPress(juce::KeyPress::escapeKey));
 		capture.drain();
 		require(capture.rows == Rows{}, "Escape left a keyboard button held");
+		noKeyboardFeedback();
 		require(!editor->settingsOpened(), "cancelling a hold opened settings");
 
 		const auto release = [&](int key)
 		{
 			mdJucePlugin::EditorIdentityTestAccess::release(*editor, key);
 		};
-		const auto checkKey = [&](int key, md::PanelPacket packet, int mods = 0)
+		const auto checkKey = [&](int key, md::PanelPacket packet, const std::string& id, int mods = 0)
 		{
+			// Compare actual skin styles, including hover-specific rules, rather
+			// than only testing a class name. Keyboard feedback needs no pointer.
+			const int mouseMods = id.rfind("enc", 0) == 0 ? Rml::Input::KM_ALT : 0;
+			mouse(id.c_str(), true, mouseMods);
+			const auto mouseHeld = appearance(id);
+			mouse(id.c_str(), false, mouseMods);
+			// MM bank clicks intentionally latch until a trig or cancellation.
+			mdJucePlugin::EditorIdentityTestAccess::loseFocus(*editor);
+			capture.drain();
+			require(capture.rows == Rows{}, "visual reference mouse press stuck");
+			context.ProcessMouseMove(-1, -1, 0);
+			const auto idle = appearance(id);
 			press(key, mods);
 			require(capture.drain() == std::vector<md::PanelPacket>{packet}, "wrong performance binding");
+			feedback(id, true);
+			require(appearance(id) == mouseHeld && appearance(id) != idle,
+				"keyboard appearance differs from mouse hold or is invisible without hover");
+			if(id == "btRec")
+			{
+				require(std::get<0>(appearance(id)) == Rml::Colourb(255, 224, 204), "RECORD press lost its contrasting face");
+				// Computed colours alone miss decorators/shadows covering the face.
+				// Render the real panel and sample the centre away from its border.
+				juce::Image rendered;
+				for(int frame = 0; frame < 3; ++frame)
+				{
+					juceRmlUi::RenderingTestAccess::update(*panel);
+					rendered = juce::Image(juce::Image::ARGB, panel->getWidth(), panel->getHeight(), true);
+					juce::Graphics graphics(rendered);
+					panel->paint(graphics);
+				}
+				const auto offset = element(id)->GetAbsoluteOffset(Rml::BoxArea::Border);
+				const auto size = element(id)->GetBox().GetSize(Rml::BoxArea::Border);
+				const auto dimensions = context.GetDimensions();
+				const auto face = rendered.getPixelAt(
+					static_cast<int>((offset.x + size.x * 0.5f) * rendered.getWidth() / dimensions.x),
+					static_cast<int>((offset.y + size.y * 0.5f) * rendered.getHeight() / dimensions.y));
+				require(face.getRed() > 220 && face.getGreen() > 180 && face.getBlue() > 160,
+					"rendered RECORD press is not visibly pale without hover");
+			}
+			if(id.rfind("trigKey", 0) == 0)
+				require(std::get<0>(appearance(id)) == (model == md::MachineModel::Machinedrum
+					? Rml::Colourb(215, 124, 67) : Rml::Colourb(201, 106, 64)), "model-specific trig colour was overridden");
 			press(key, mods);
 			require(capture.drain().empty(), "performance key repeated");
 			release(key);
+			feedback(id, false);
+			require(appearance(id) == idle, "key release left a pressed appearance");
 			require(capture.drain() == std::vector<md::PanelPacket>{{packet.row, 0}}, "wrong performance release");
 		};
 		constexpr char trigKeys[] = "12345678qwertyui";
 		phase = "trig bindings";
 		for(int i = 0; i < 16; ++i)
-			checkKey(trigKeys[i], {static_cast<uint8_t>(0x20 + i / 8), static_cast<uint8_t>(1u << (i % 8))});
-		struct ExpectedKey { int key; md::PanelPacket packet; };
+			checkKey(trigKeys[i], {static_cast<uint8_t>(0x20 + i / 8), static_cast<uint8_t>(1u << (i % 8))}, "trigKey" + std::to_string(i));
+		struct ExpectedKey { int key; md::PanelPacket packet; const char* id = nullptr; };
 #if defined(MD_KEYBOARD_TEST_MM)
 		const ExpectedKey performance[] = {
-			{'j', {0x24, 0x80}}, {'k', {0x25, 0x01}}, {'l', {0x25, 0x02}}, {' ', {0x25, 0x01}},
-			{'o', {0x23, 0x04}}, {'n', {0x22, 0x01}}, {'\\', {0x23, 0x01}}, {'b', {0x24, 0x04}},
-			{'z', {0x24, 0x08}}, {'x', {0x24, 0x10}}, {'c', {0x24, 0x20}}, {'v', {0x24, 0x40}},
-			{'p', {0x23, 0x08}}, {'m', {0x22, 0x02}}, {'[', {0x25, 0x08}}, {']', {0x25, 0x04}}};
+			{'j', {0x24, 0x80}, "btRec"}, {'k', {0x25, 0x01}, "btPlay"}, {'l', {0x25, 0x02}, "btStop"}, {' ', {0x25, 0x01}, "btPlay"},
+			{'o', {0x23, 0x04}, "btKit"}, {'n', {0x22, 0x01}, "btScale"}, {'\\', {0x23, 0x01}, "btTempo"}, {'b', {0x24, 0x04}, "btBankGrp"},
+			{'z', {0x24, 0x08}, "btBankA"}, {'x', {0x24, 0x10}, "btBankB"}, {'c', {0x24, 0x20}, "btBankC"}, {'v', {0x24, 0x40}, "btBankD"},
+			{'p', {0x23, 0x08}, "btSongEnable"}, {'m', {0x22, 0x02}, "btTrigSelect"}, {'[', {0x25, 0x08}, "btDataPrev"}, {']', {0x25, 0x04}, "btDataNext"}};
 		constexpr uint8_t encoderRow = 0x26;
 		constexpr int trackCount = 6, pageCount = 7;
 #else
 		const ExpectedKey performance[] = {
-			{'j', {0x22, 0x02}}, {'k', {0x22, 0x04}}, {'l', {0x22, 0x08}}, {' ', {0x22, 0x04}},
-			{'o', {0x22, 0x40}}, {'n', {0x22, 0x80}}, {'\\', {0x22, 0x01}}, {'b', {0x24, 0x04}},
-			{'z', {0x23, 0x01}}, {'x', {0x23, 0x02}}, {'c', {0x23, 0x04}}, {'v', {0x23, 0x08}},
-			{'p', {0x22, 0x20}}, {'m', {0x24, 0x01}}, {']', {0x22, 0x10}}};
+			{'j', {0x22, 0x02}, "btRec"}, {'k', {0x22, 0x04}, "btPlay"}, {'l', {0x22, 0x08}, "btStop"}, {' ', {0x22, 0x04}, "btPlay"},
+			{'o', {0x22, 0x40}, "btKit"}, {'n', {0x22, 0x80}, "btScale"}, {'\\', {0x22, 0x01}, "btTempo"}, {'b', {0x24, 0x04}, "btBankGrp"},
+			{'z', {0x23, 0x01}, "btBankA"}, {'x', {0x23, 0x02}, "btBankB"}, {'c', {0x23, 0x04}, "btBankC"}, {'v', {0x23, 0x08}, "btBankD"},
+			{'p', {0x22, 0x20}, "btPattern"}, {'m', {0x24, 0x01}, "btClassic"}, {']', {0x22, 0x10}, "btSynth"}};
 		constexpr uint8_t encoderRow = 0x25;
 		constexpr int trackCount = 16, pageCount = 3;
 #endif
 		phase = "performance bindings";
-		for(const auto& binding : performance) checkKey(binding.key, binding.packet);
+		for(const auto& binding : performance) checkKey(binding.key, binding.packet, binding.id);
 		for(int i = 0; i < 8; ++i)
-			checkKey(juce::KeyPress::F1Key + i, {encoderRow, static_cast<uint8_t>(1u << i)});
+			checkKey(juce::KeyPress::F1Key + i, {encoderRow, static_cast<uint8_t>(1u << i)}, std::string("enc") + static_cast<char>('A' + i));
+
+		// RECORD must stay visibly held until both input owners release, in
+		// either press/release order. The recording LED is independent of both.
+		phase = "shared RECORD feedback";
+		auto* recordLed = element(model == md::MachineModel::Machinedrum ? "ledRecord" : "mmRecordLed");
+		for(bool ledOn : {false, true})
+		for(bool mouseDownFirst : {false, true})
+		for(bool mouseUpFirst : {false, true})
+		{
+			recordLed->SetClass("lit", ledOn);
+			if(mouseDownFirst) mouse("btRec", true);
+			press('j');
+			if(!mouseDownFirst) mouse("btRec", true);
+			const auto held = appearance("btRec");
+			capture.drain();
+			if(mouseUpFirst) mouse("btRec", false);
+			else release('j');
+			capture.drain();
+			require(appearance("btRec") == held, "shared RECORD highlight released early");
+			require(capture.rows[performance[0].packet.row - 0x20] == performance[0].packet.mask,
+				"visual feedback blocked independent mouse/keyboard ownership");
+			if(mouseUpFirst) release('j');
+			else mouse("btRec", false);
+			context.ProcessMouseMove(-1, -1, 0);
+			capture.drain();
+			require(appearance("btRec") != held && capture.rows == Rows{}, "shared RECORD feedback stuck");
+			require(recordLed->IsClassSet("lit") == ledOn, "press feedback changed the recording LED");
+		}
+		recordLed->SetClass("lit", false);
 
 		// A physical TEMPO tap has two edges. Only the first tap presses FUNCTION;
 		// in particular MM sends both buttons on one row, MD on separate rows.
@@ -410,6 +519,8 @@ int main()
 		for(int tap = 0; tap < 4; ++tap)
 		{
 			press(tap % 2 ? '\\' : '|', shift);
+			feedback("btFunction", true);
+			feedback("btTempo", true);
 			auto edges = capture.drain();
 			if(tap == 0)
 				require(edges == std::vector<md::PanelPacket>{function, tempoDown}, "first tap must press FUNCTION then TEMPO");
@@ -419,10 +530,13 @@ int main()
 			require(capture.drain().empty(), "OS repeat generated an extra tempo tap");
 			// Synthetic key-up: native Shift remains down while the target key is up.
 			require(mdJucePlugin::EditorIdentityTestAccess::poll(*editor, shift), "TEMPO key-up not recognised");
+			feedback("btFunction", true);
+			feedback("btTempo", false);
 			require(capture.drain() == std::vector<md::PanelPacket>{{tempo.row, functionOnly[tempo.row - 0x20]}}
 				&& capture.rows == functionOnly, "releasing TEMPO also dropped FUNCTION between beats");
 		}
 		modifiers(0);
+		feedback("btFunction", false);
 		require(capture.drain() == std::vector<md::PanelPacket>{{function.row, 0}}, "releasing Shift did not end tap tempo");
 
 		// The modifier lifetime is shared by every hardware button mapping.
@@ -648,7 +762,10 @@ int main()
 		constexpr char trackKeys[] = "12345678asdfghjk";
 		for(int i = 0; i < trackCount; ++i)
 		{
+			const auto id = model == md::MachineModel::Machinedrum ? "trackLabel" + std::to_string(i)
+				: "btTrack" + std::to_string(i + 1);
 			press(trackKeys[i], juce::ModifierKeys::altModifier);
+			feedback(id, true);
 			const auto events = capture.drain();
 #if defined(MD_KEYBOARD_TEST_MM)
 			require(events == std::vector<md::PanelPacket>{{0x22, static_cast<uint8_t>(0x80 >> i)}},
@@ -657,9 +774,11 @@ int main()
 			require(events.empty(), "Machinedrum track selection fired a trig");
 #endif
 			press(trackKeys[i]);
+			feedback(id, true);
 			require(capture.drain().empty(), "releasing Option changed a held binding");
 			require(mdJucePlugin::EditorIdentityTestAccess::heldKeys(*editor) == 1, "track repeat duplicated ownership");
 			release(trackKeys[i]);
+			feedback(id, false);
 			capture.drain();
 			require(capture.rows == Rows{}, "track selection stuck");
 		}
@@ -667,11 +786,16 @@ int main()
 		phase = "page selection";
 		for(int i = 0; i < pageCount; ++i)
 		{
+			const char* mdPages[] = {"pageSynthesis", "pageEffects", "pageRouting"};
+			const char* mmPages[] = {"pageSynthesis", "pageAmplification", "pageFilter", "pageEffects", "pageLfo1", "pageLfo2", "pageLfo3"};
+			const auto* id = model == md::MachineModel::Machinedrum ? mdPages[i] : mmPages[i];
 			press(pages[i]);
+			feedback(id, true);
 			require(mdJucePlugin::EditorIdentityTestAccess::page(*editor) == i, "wrong direct data page");
 			press(pages[i]);
 			require(mdJucePlugin::EditorIdentityTestAccess::heldKeys(*editor) == 1, "page repeated");
 			release(pages[i]);
+			feedback(id, false);
 		}
 		capture.drain();
 
@@ -679,11 +803,14 @@ int main()
 		phase = "PLAY aliases and mouse bank latch";
 		press('k');
 		press(' ');
+		feedback("btPlay", true);
 		capture.drain();
 		release('k');
+		feedback("btPlay", true);
 		capture.drain();
 		require(capture.rows[performance[1].packet.row - 0x20] == performance[1].packet.mask, "PLAY alias released early");
 		release(' ');
+		feedback("btPlay", false);
 		capture.drain();
 		require(capture.rows == Rows{}, "PLAY alias stuck");
 
@@ -709,24 +836,28 @@ int main()
 			{
 				peer->handleKeyPress(juce::KeyPress(key, juce::ModifierKeys(mods), 0));
 				require(capture.drain().empty(), "host shortcut reached the machine");
+				noKeyboardFeedback();
 			}
 		// Rml popup focus and a native modal component must keep their keys.
 		peer->handleKeyPress(juce::KeyPress(juce::KeyPress::escapeKey));
 		require(editor->settingsOpened(), "idle Escape lost the existing settings shortcut");
 		peer->handleKeyPress(juce::KeyPress('1'));
 		require(capture.drain().empty(), "settings key reached the machine");
+		noKeyboardFeedback();
 		peer->handleKeyPress(juce::KeyPress(juce::KeyPress::escapeKey));
 		require(!editor->settingsOpened(), "Escape did not close settings");
 		auto* popup = context.CreateDocument();
 		popup->Show(Rml::ModalFlag::Modal, Rml::FocusFlag::Document);
 		peer->handleKeyPress(juce::KeyPress('1'));
 		require(capture.drain().empty(), "popup key reached the machine");
+		noKeyboardFeedback();
 		popup->Close();
 		editor->getDocument()->Focus();
 		juce::Component modal;
 		modal.enterModalState(false);
 		peer->handleKeyPress(juce::KeyPress('J'));
 		require(capture.drain().empty(), "modal key reached the machine");
+		noKeyboardFeedback();
 		modal.exitModalState(0);
 		// Focus loss also clears new held controls and encoders.
 		phase = "focus loss after closing dialogs";
@@ -736,6 +867,7 @@ int main()
 		mdJucePlugin::EditorIdentityTestAccess::loseFocus(*editor);
 		capture.drain();
 		require(capture.rows == Rows{}, "focus loss left a performance key held");
+		noKeyboardFeedback();
 
 		// An unbound key must not send a machine event.
 		for(int mods : {0, static_cast<int>(juce::ModifierKeys::shiftModifier)})
@@ -743,6 +875,7 @@ int main()
 			panel->modifierKeysChanged(juce::ModifierKeys(mods));
 			peer->handleKeyPress(juce::KeyPress('9', juce::ModifierKeys(mods), 0));
 			require(capture.drain().empty(), "unbound key reached machine");
+			noKeyboardFeedback();
 		}
 		panel->modifierKeysChanged(juce::ModifierKeys());
 #if !defined(MD_KEYBOARD_TEST_MM)
@@ -776,7 +909,7 @@ int main()
 		}
 #endif
 		panel->removeFromDesktop();
-		std::puts("Panel keyboard bindings, mouse chords, repeat and focus release passed.");
+		std::puts("Panel keyboard bindings, visual feedback, mouse chords, repeat and focus release passed.");
 		return 0;
 	}
 	catch(const std::exception& error)
