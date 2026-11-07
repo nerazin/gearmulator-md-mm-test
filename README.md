@@ -1,5 +1,7 @@
 # MD/MM keyboard and touch controls
 
+[macOS build instructions](#build-on-macos-without-pgo) · [Touch and Sidecar](#touch-screens-and-sidecar)
+
 This is a small fork of [joelanders/gearmulator-md-mm](https://github.com/joelanders/gearmulator-md-mm),
 based on [PR #100](https://github.com/joelanders/gearmulator-md-mm/pull/100).
 It adds computer-keyboard and multi-touch controls to the shared Machinedrum and Monomachine
@@ -79,6 +81,86 @@ navigation/YES/NO keys, Control/Command combinations are not panel shortcuts.
 In a DAW, give the plug-in window keyboard focus and enable sending keys to the
 plug-in if the host requires it. The emulation and audio are unchanged
 from PR #100.
+
+## Build on macOS without PGO
+
+These commands build Release **standalone apps and VST3 plug-ins** for an
+Apple-silicon Mac (M1 or newer), with PGO explicitly disabled. No profile
+generation or training run is needed.
+
+**1. Install the tools once.** Install [Xcode](https://developer.apple.com/xcode/)
+(27 or newer for full touch support), open it and finish its initial setup.
+Install [Homebrew](https://brew.sh/) if needed, then run in Terminal:
+
+```sh
+sudo xcode-select --switch /Applications/Xcode.app/Contents/Developer
+brew install cmake ninja
+```
+
+**2. Get this branch, including its dependencies:**
+
+```sh
+git clone --branch dev/multi-touch-support --recurse-submodules https://github.com/nerazin/gearmulator-md-mm-test.git
+cd gearmulator-md-mm-test
+```
+
+**3. Configure once** from the repository folder:
+
+```sh
+cmake -S . -B build-macos -G Ninja \
+  -DCMAKE_BUILD_TYPE=Release -DCMAKE_OSX_ARCHITECTURES=arm64 \
+  -DCMAKE_OSX_DEPLOYMENT_TARGET=11.0 -DCMAKE_POLICY_VERSION_MINIMUM=3.5 \
+  -DGEARMULATOR_MDMM_APPLE_PGO_MODE=none \
+  -DBUILD_TESTING=OFF -DDSP56300_DEBUGGER=OFF \
+  -Dgearmulator_BUILD_JUCEPLUGIN=ON -Dgearmulator_BUILD_FX_PLUGIN=OFF \
+  -Dgearmulator_BUILD_JUCEPLUGIN_Standalone=ON -Dgearmulator_BUILD_JUCEPLUGIN_VST3=ON \
+  -Dgearmulator_BUILD_JUCEPLUGIN_VST2=OFF -Dgearmulator_BUILD_JUCEPLUGIN_AU=OFF \
+  -Dgearmulator_BUILD_JUCEPLUGIN_CLAP=OFF -Dgearmulator_BUILD_JUCEPLUGIN_LV2=OFF \
+  -Dgearmulator_SYNTH_ELEKTRON=ON -Dgearmulator_SYNTH_OSIRUS=OFF \
+  -Dgearmulator_SYNTH_OSTIRUS=OFF -Dgearmulator_SYNTH_VAVRA=OFF \
+  -Dgearmulator_SYNTH_XENIA=OFF -Dgearmulator_SYNTH_NODALRED2X=OFF \
+  -Dgearmulator_SYNTH_JE8086=OFF
+```
+
+For an Intel Mac, replace `arm64` with `x86_64`; for a universal build, use
+`"arm64;x86_64"`. The policy flag allows the bundled dependencies to configure
+with CMake 4.
+
+**4. Compile both machines:**
+
+```sh
+cmake --build build-macos --parallel 4 --target \
+  mdJucePlugin_Standalone mdJucePlugin_VST3 \
+  mmJucePlugin_Standalone mmJucePlugin_VST3
+```
+
+For **Machinedrum only**, keep just the two `mdJucePlugin_...` targets.
+For **Monomachine only**, keep just the two `mmJucePlugin_...` targets.
+For standalone only, omit the `_VST3` targets.
+
+The finished files are inside the repository:
+
+| Format | Folder | Files |
+| --- | --- | --- |
+| Standalone | `bin/plugins/Release/Standalone/` | `Gearmulator MD.app`, `Gearmulator MM.app` |
+| VST3 | `bin/plugins/Release/VST3/` | `Gearmulator MD.vst3`, `Gearmulator MM.vst3` |
+
+Open the apps directly. To use the plug-ins in a DAW, copy the `.vst3` bundles to
+`~/Library/Audio/Plug-Ins/VST3/` and rescan plug-ins. Your own firmware is required
+to run the emulators; it is not included in the build.
+
+**Updating an existing checkout of this fork:** run the following inside its
+folder, then repeat steps 3 and 4. You do not need to clone or reinstall the tools.
+
+```sh
+git fetch origin
+git switch dev/multi-touch-support
+git pull --ff-only origin dev/multi-touch-support
+git submodule update --init --recursive
+```
+
+For the optional PGO workflow, see [Apple optimisation notes](doc/mdmm-apple-optimization.md).
+For finger input through Sidecar, see the OS requirements below.
 
 ## Touch screens and Sidecar
 
