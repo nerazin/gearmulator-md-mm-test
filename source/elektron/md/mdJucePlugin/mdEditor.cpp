@@ -146,6 +146,9 @@ namespace mdJucePlugin
 
 		// Arbitrary endless-knob value range; only per-move deltas are used.
 		constexpr float g_encoderRange = 100.0f;
+		constexpr double g_touchTapDurationMs = 250.0;
+		constexpr double g_touchDoubleTapIntervalMs = 350.0;
+		constexpr float g_touchTapTravelSquared = 36.0f; // Six logical pixels.
 		constexpr float g_knobDragDistanceScale = 2.0f;
 		constexpr int g_encoderBurstCap = 8;	// max ±1 events emitted per Change
 		constexpr int g_presentationTimerId = 1;
@@ -390,7 +393,9 @@ namespace mdJucePlugin
 		applyPanelSpeeds();
 		createLeds();
 		createPanelAffordances();
-		getRmlComponent()->setTouchHandler([this](const juceRmlUi::TouchEvent& event) { return handlePanelTouch(event); });
+		getRmlComponent()->setTouchHandler(
+			[this](const juceRmlUi::TouchEvent& event) { return handlePanelTouch(event); },
+			[this] { m_encoderTouchTaps.fill(std::nullopt); });
 		applyPixelPerfectPanel();
 
 		// A transfer belongs to the emulated machine, not the lifetime of one
@@ -514,8 +519,11 @@ namespace mdJucePlugin
 		const auto enabled = getProcessor().getConfig().getBoolValue(
 			lcdInteraction::configKey, lcdInteraction::defaultEnabled);
 		const auto oldState = m_lcdInteractionState;
+		const auto encoderRow = md::panelEncoderPressPacket(getModel(), md::PanelEncoder::DataEntryA)->row;
+		const bool encoderHeld = (m_panelRows.mask(encoderRow) | m_keyboardPanelRows.mask(encoderRow)
+			| m_touchPanelRows.mask(encoderRow)) != 0;
 		m_lcdInteractionState = enabled && m_frontPanelSnapshotValid
-			? lcdInteraction::classify(m_frontPanelSnapshot, getModel(), m_encoderPress.active())
+			? lcdInteraction::classify(m_frontPanelSnapshot, getModel(), encoderHeld)
 			: std::nullopt;
 		m_lcdInteractionInputChanged = false;
 		const auto identityChanged = oldState.has_value() != m_lcdInteractionState.has_value()
@@ -693,6 +701,7 @@ namespace mdJucePlugin
 				[this](const Rml::Event& _event)
 				{
 					m_mouseOwnsShift = _event.GetParameter<int>("shift_key", 0) != 0;
+					m_encoderTouchTaps.fill(std::nullopt);
 					// A shifted click takes over Shift; a plain click also clears a
 					// stale keyboard hold if the host missed the Shift-up.
 					setKeyboardFunction(false);
@@ -1111,15 +1120,18 @@ namespace mdJucePlugin
 		using Phase = juceRmlUi::TouchEvent::Phase;
 		if(event.phase == Phase::End || event.phase == Phase::Cancel)
 		{
-			releasePanelTouch(event.id);
+			if(event.phase == Phase::Cancel) m_encoderTouchTaps.fill(std::nullopt);
+			releasePanelTouch(event);
 			return true;
 		}
 		if(event.phase == Phase::Move)
 		{
 			const auto contact = std::find_if(m_panelTouches.begin(), m_panelTouches.end(),
 				[&](const PanelTouch& t) { return t.id == event.id; });
-			if(contact != m_panelTouches.end() && !contact->packet)
+			if(contact != m_panelTouches.end() && contact->knob)
 			{
+				if(event.position.getDistanceSquaredFrom(contact->startPosition) > g_touchTapTravelSquared)
+					contact->tapCandidate = false;
 				const auto delta = event.position - contact->lastPosition;
 				contact->lastPosition = event.position;
 				if(auto* knob = findChild<juceRmlUi::ElemKnob>(contact->elementId, false))
@@ -1131,7 +1143,7 @@ namespace mdJucePlugin
 		auto* panel = getRmlComponent();
 		auto* target = panel->getContext()->GetElementAtPoint({event.position.x, event.position.y});
 		if(!target || target->GetOwnerDocument() != getDocument()) return false;
-		// No fake mouse events, Shift/bank latches or encoder switch gestures.
+		// No fake mouse events or Shift/bank latches.
 		// Each contact stays captured on its original physical control.
 		for(auto* element = target; element; element = element->GetParentNode())
 		{
@@ -1153,12 +1165,37 @@ namespace mdJucePlugin
 				knob && (knob == m_masterVolume || knob == m_soundEncoder || knob == m_levelEncoder
 					|| std::find(m_encoders.begin(), m_encoders.end(), knob) != m_encoders.end()))
 			{
-				// A second finger on the same knob cannot reset its drag origin.
-				if(std::none_of(m_panelTouches.begin(), m_panelTouches.end(),
-					[&](const PanelTouch& t) { return t.elementId == id; }))
+				const auto encoder = std::find(m_encoders.begin(), m_encoders.end(), knob);
+				const std::optional<unsigned> index = encoder == m_encoders.end() ? std::nullopt
+					: std::optional<unsigned>(static_cast<unsigned>(encoder - m_encoders.begin()));
+				const auto active = std::find_if(m_panelTouches.begin(), m_panelTouches.end(),
+					[&](const PanelTouch& t) { return t.elementId == id; });
+				if(active != m_panelTouches.end())
 				{
-					m_panelTouches.push_back({event.id, id, {}, event.position});
-					knob->setTouchDragging(true);
+					// Overlapping fingers cannot arm a double-tap or steal a drag.
+					active->tapCandidate = false;
+					if(index) m_encoderTouchTaps[*index].reset();
+					return true;
+				}
+				std::optional<md::PanelPacket> packet;
+				if(index)
+				{
+					auto& tap = m_encoderTouchTaps[*index];
+					if(tap && event.timeMilliseconds >= *tap
+						&& event.timeMilliseconds - *tap <= g_touchDoubleTapIntervalMs)
+						packet = md::panelEncoderPressPacket(getModel(), static_cast<md::PanelEncoder>(*index));
+					tap.reset(); // Consume the pair; a third tap starts a new gesture.
+				}
+				m_panelTouches.push_back({event.id, id, packet, event.position, true, index,
+					event.position, event.timeMilliseconds, index.has_value() && !packet});
+				knob->setTouchDragging(true);
+				if(packet)
+				{
+					m_touchPanelRows.press(*packet);
+					refreshTouchFeedback(id);
+					(void)sendPanelEvent(packet->row, m_panelRows.mask(packet->row));
+					m_lcdInteractionInputChanged = true;
+					updateLcdInteractionState();
 				}
 				return true;
 			}
@@ -1166,13 +1203,19 @@ namespace mdJucePlugin
 		return false;
 	}
 
-	void Editor::releasePanelTouch(const uint64_t id)
+	void Editor::releasePanelTouch(const juceRmlUi::TouchEvent& event)
 	{
 		const auto contact = std::find_if(m_panelTouches.begin(), m_panelTouches.end(),
-			[id](const PanelTouch& t) { return t.id == id; });
+			[&](const PanelTouch& t) { return t.id == event.id; });
 		if(contact == m_panelTouches.end()) return;
 		const auto packet = contact->packet;
 		const auto elementId = contact->elementId;
+		const bool knobContact = contact->knob;
+		const auto duration = event.timeMilliseconds - contact->startedAt;
+		if(contact->encoderIndex && contact->tapCandidate && event.phase == juceRmlUi::TouchEvent::Phase::End
+			&& duration >= 0 && duration <= g_touchTapDurationMs
+			&& event.position.getDistanceSquaredFrom(contact->startPosition) <= g_touchTapTravelSquared)
+			m_encoderTouchTaps[*contact->encoderIndex] = event.timeMilliseconds;
 		m_panelTouches.erase(contact);
 		m_touchPanelRows.reset();
 		for(const auto& touch : m_panelTouches)
@@ -1182,8 +1225,15 @@ namespace mdJucePlugin
 			refreshTouchFeedback(elementId);
 			(void)sendPanelEvent(packet->row, m_panelRows.mask(packet->row));
 		}
-		else if(auto* knob = findChild<juceRmlUi::ElemKnob>(elementId, false))
-			knob->setTouchDragging(false);
+		if(knobContact)
+		{
+			if(auto* knob = findChild<juceRmlUi::ElemKnob>(elementId, false)) knob->setTouchDragging(false);
+			if(packet)
+			{
+				m_lcdInteractionInputChanged = true;
+				updateLcdInteractionState();
+			}
+		}
 	}
 
 	void Editor::refreshTouchFeedback(const std::string& id)
@@ -1215,6 +1265,8 @@ namespace mdJucePlugin
 			if(packet)
 			{
 				(void)sendPanelEvent(packet->row, m_panelRows.mask(packet->row));
+				if(packet->row == md::panelEncoderPressPacket(getModel(), md::PanelEncoder::DataEntryA)->row)
+					updateLcdInteractionState();
 				if(getModel() == md::MachineModel::Monomachine && packet->row <= 0x21)
 					releasePatternBankLatch();
 			}
@@ -1291,6 +1343,8 @@ namespace mdJucePlugin
 		{
 			m_keyboardPanelRows.press(*packet);
 			(void)sendPanelEvent(packet->row, m_panelRows.mask(packet->row));
+			if(packet->row == md::panelEncoderPressPacket(model, md::PanelEncoder::DataEntryA)->row)
+				updateLcdInteractionState();
 		}
 		else if(track >= 0)
 			selectMachinedrumTrack(track);
@@ -2267,7 +2321,7 @@ namespace mdJucePlugin
 		if(const auto packet = md::panelEncoderPressPacket(getModel(), _encoder))
 		{
 			_knob->SetAttribute("speedScaleAlt", 1.0f);
-			_knob->SetAttribute("title", "Drag to turn; Alt/Option-click to press; Alt/Option-drag to press and turn");
+			_knob->SetAttribute("title", "Drag to turn; Alt/Option-click to press; touch: double-tap and hold to press, then drag to turn");
 			juceRmlUi::EventListener::Add(_knob, Rml::EventId::Mousedown,
 				[this, _knob, packet](Rml::Event& _event)
 				{
@@ -2554,7 +2608,8 @@ namespace mdJucePlugin
 			return;
 
 		const auto nowMilliseconds = juce::Time::getMillisecondCounterHiRes();
-		if(!m_panelTouches.empty() && !panelKeyboardAllowed())
+		if((!m_panelTouches.empty() || std::any_of(m_encoderTouchTaps.begin(), m_encoderTouchTaps.end(),
+			[](const auto& tap) { return tap.has_value(); })) && !panelKeyboardAllowed())
 			getRmlComponent()->cancelTouches();
 		// Hosts can miss a native key-up. Only release existing holds here; never
 		// start a panel press from keys used in another window or application.

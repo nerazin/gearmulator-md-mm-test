@@ -73,7 +73,7 @@ namespace juceRmlUi
 					});
 				addMethod(@selector(reset), [](id self, SEL selector)
 					{
-						if(auto* p = owner(self)) p->clear();
+						if(auto* p = owner(self)) p->clear(false);
 						ObjCClass::sendSuperclassMessage<void>(self, selector);
 					});
 				registerClass();
@@ -131,11 +131,14 @@ namespace juceRmlUi
 			m_pending.clear();
 			m_component.processTouches(std::move(pending));
 		}
-		void clear()
+		void clear(bool cancelCompletedTaps = true)
 		{
+			const bool interrupted = [m_identities count] != 0 || !m_pending.empty();
 			m_pending.clear();
 			[m_identities removeAllObjects];
-			m_component.cancelTouches();
+			// AppKit resets after an ordinary lift too. Preserve that completed
+			// tap; explicit focus, geometry and peer resets still invalidate it.
+			if(cancelCompletedTaps || interrupted) m_component.cancelTouches();
 		}
 		void reset() { clear(); [m_recognizer setEnabled:NO]; [m_recognizer setEnabled:YES]; }
 		void attach()

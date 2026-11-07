@@ -96,7 +96,7 @@ namespace juceRmlUi
 		// Opt-in direct touch. The callback receives Rml coordinates; returning
 		// true on Begin captures that finger independently of Rml's one mouse.
 		using TouchHandler = std::function<bool(const TouchEvent&)>;
-		void setTouchHandler(TouchHandler handler);
+		void setTouchHandler(TouchHandler handler, std::function<void()> onCancel = {});
 		void processTouch(const TouchEvent& event); // input: component coordinates
 		void processTouches(std::vector<TouchEvent> events);
 		void cancelTouches();
@@ -190,6 +190,7 @@ namespace juceRmlUi
 		enum class TouchRoute { Custom, Mouse, Ignored };
 		struct TouchCapture { TouchRoute route; int priority; };
 		TouchHandler m_touchHandler;
+		std::function<void()> m_touchCancelHandler;
 		std::map<uint64_t, TouchCapture> m_touches;
 		std::optional<uint64_t> m_mouseTouch;
 		bool m_realMouseDown = false;

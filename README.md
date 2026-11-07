@@ -184,8 +184,15 @@ screen contacts. See [Apple's Sidecar touch guidance](https://developer.apple.co
   then lift. Their persistent mouse-click latch is not used for touch.
 - Drag up/right to increase a knob and down/left to decrease it. Several knobs
   can be turned independently while other fingers hold trigs or FUNCTION. The
-  first finger on each knob owns its drag until lift. Touch does **not** press
-  encoder switches, and no long-press or double-tap push gesture is enabled.
+  first finger on each knob owns its drag until lift. Mouse and touch drags use
+  the same reduced sensitivity for fine adjustments.
+- To push a data-entry knob **A–H**, tap it once, lift, then touch the same knob
+  again within 350 ms and keep your finger down. The second contact immediately
+  presses the encoder switch and shades the knob. Drag that finger to turn while
+  pressed; lift to release. Several knobs can be pressed and turned independently.
+  The first tap must be brief (at most 250 ms), with no substantial movement;
+  an ordinary drag or long hold does not arm the gesture. LEVEL, MASTER VOLUME
+  and the MD sound selector remain turn-only, matching the existing switch mapping.
 - Focus loss, hiding, resizing, system cancellation and the keyboard Escape key
   release touch holds. No touch gesture opens the Escape/settings menu.
   Settings opened from the keyboard and popups use a single-touch mouse-compatible path; they do
@@ -194,7 +201,8 @@ screen contacts. See [Apple's Sidecar touch guidance](https://developer.apple.co
 
 The `mdPanelTouchTest` and `mmPanelTouchTest` targets exercise independent scan
 rows, FUNCTION chords, disabled touch shortcuts, eight concurrent encoder
-drags, wrap direction, mixed-input ownership and cancellation without firmware.
+drags, double-tap pushes and pressed turns, wrap direction, mixed-input ownership
+and cancellation without firmware.
 The `MD/MM touch input` workflow builds both products and runs the touch and
 keyboard regression tests with the macOS 27 SDK.
 

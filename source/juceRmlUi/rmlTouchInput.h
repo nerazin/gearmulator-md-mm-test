@@ -11,6 +11,8 @@ namespace juceRmlUi
 		uint64_t id;
 		Phase phase;
 		juce::Point<float> position;
+		// Capture before native recognizer actions batch delivery.
+		double timeMilliseconds = juce::Time::getMillisecondCounterHiRes();
 	};
 	class RmlComponent;
 	class NativeTouchInput

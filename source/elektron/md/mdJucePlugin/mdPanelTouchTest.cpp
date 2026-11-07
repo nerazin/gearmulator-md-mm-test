@@ -96,12 +96,12 @@ int main()
 		};
 		const auto touch = [&](uint64_t id, Phase phase, const std::string& target)
 		{ panel->processTouch({id, phase, centre(target)}); };
-		const auto mouse = [&](const char* id, bool down)
+		const auto mouse = [&](const char* id, bool down, int modifiers = 0)
 		{
 			const auto pos = centre(id);
 			const auto p = panel->toRmlPosition(juce::roundToInt(pos.x), juce::roundToInt(pos.y));
-			context.ProcessMouseMove(p.x, p.y, 0);
-			if(down) context.ProcessMouseButtonDown(0, 0); else context.ProcessMouseButtonUp(0, 0);
+			context.ProcessMouseMove(p.x, p.y, modifiers);
+			if(down) context.ProcessMouseButtonDown(0, modifiers); else context.ProcessMouseButtonUp(0, modifiers);
 		};
 		const auto key = [&](int k) { require(panel->getPeer()->handleKeyPress(juce::KeyPress(k)), "key not handled"); };
 		const auto held = [&](const std::string& id, bool expected)
@@ -252,6 +252,120 @@ int main()
 			require(!packets.empty(), "additional encoder did not turn");
 			for(const auto& p : packets) require(p.row == target.second && p.mask == 1, "wrong additional encoder");
 			touch(157, Phase::End, target.first);
+		}
+
+		// A quick tap arms only its own data-entry encoder. The second contact
+		// owns the switch until lift, even while moving or holding other controls.
+		const auto timedTouch = [&](uint64_t id, Phase phase, const std::string& target,
+			double time, juce::Point<float> offset = {})
+		{ panel->processTouch({id, phase, centre(target) + offset, time}); };
+		const auto doubleDown = [&](uint64_t id, const std::string& target, double time)
+		{
+			timedTouch(id, Phase::Begin, target, time);
+			timedTouch(id, Phase::End, target, time + 40);
+			require(drain().empty(), "first tap pressed an encoder switch");
+			timedTouch(id + 1, Phase::Begin, target, time + 100);
+		};
+		const auto encoderA = *md::panelEncoderPressPacket(model, md::PanelEncoder::DataEntryA);
+		for(int i = 0; i < 8; ++i)
+		{
+			const auto target = std::string("enc") + static_cast<char>('A' + i);
+			doubleDown(400 + i * 2, target, 1000); drain(); held(target, true);
+			context.Update();
+			require(element(target)->GetComputedValues().opacity() == 0.75f, "pressed touch knob is not shaded");
+			require(rows[encoderA.row - 0x20] == (1u << (i + 1)) - 1, "independent encoder switch missing");
+		}
+		touch(420, Phase::Begin, "trigKey0"); touch(421, Phase::Begin, "btFunction"); drain();
+		Input::tick(*editor); drain();
+		require(rows[encoderA.row - 0x20] == 0xff, "mouse/keyboard polling released touch encoder switches");
+		for(int i = 0; i < 8; ++i)
+		{
+			const auto target = std::string("enc") + static_cast<char>('A' + i);
+			timedTouch(401 + i * 2, Phase::Move, target, 2200, {0, -30});
+			const auto packets = drain();
+			require(!packets.empty(), "pressed touch encoder did not turn");
+			for(const auto& p : packets) require(p.row == 0x30 + i && p.mask == 1, "pressed touch turned wrong encoder");
+			require(rows[0] == 1 && (rows[function.row - 0x20] & function.mask), "pressed turn released another control");
+			timedTouch(401 + i * 2, Phase::End, "btRec", 2250); drain(); held(target, false);
+			require(rows[encoderA.row - 0x20] == static_cast<uint8_t>(0xffu << (i + 1)), "encoder lift released another knob");
+		}
+		panel->cancelTouches(); drain();
+
+		// A completed push consumes the double-tap rather than arming a third tap.
+		doubleDown(430, "encA", 3000); drain();
+		timedTouch(431, Phase::End, "encA", 3140); drain();
+		timedTouch(432, Phase::Begin, "encA", 3200);
+		require(drain().empty() && rows == Rows{}, "third tap repeated a consumed push");
+		panel->cancelTouches(); drain();
+		// Reject long taps, expired taps, out-and-back drags, cancelled taps and
+		// overlapping fingers. Invalidation also applies between completed taps.
+		for(int reason = 0; reason < 8; ++reason)
+		{
+			timedTouch(440, Phase::Begin, "encA", 4000);
+			if(reason == 2)
+			{
+				timedTouch(440, Phase::Move, "encA", 4020, {20, 0});
+				timedTouch(440, Phase::Move, "encA", 4030);
+			}
+			if(reason == 4) timedTouch(441, Phase::Begin, "encA", 4020);
+			timedTouch(440, reason == 3 ? Phase::Cancel : Phase::End, "encA", reason == 0 ? 4300 : 4040);
+			if(reason == 4) timedTouch(441, Phase::End, "encA", 4050);
+			if(reason == 5) panel->cancelTouches();
+			if(reason == 6) Input::loseFocus(*editor);
+			if(reason == 7)
+			{
+				const auto bounds = panel->getBounds();
+				panel->setSize(bounds.getWidth() + 1, bounds.getHeight()); panel->setBounds(bounds);
+			}
+			drain();
+			timedTouch(442, Phase::Begin, "encA", reason == 1 ? 4391 : 4350);
+			require(drain().empty() && rows == Rows{}, "invalid first tap armed an encoder push");
+			panel->cancelTouches(); drain();
+		}
+		timedTouch(450, Phase::Begin, "encA", 5000); timedTouch(450, Phase::End, "encA", 5040);
+		timedTouch(451, Phase::Begin, "encB", 5100);
+		require(drain().empty(), "tap on another knob pressed a switch"); panel->cancelTouches();
+		for(const auto* target : {"encMaster", "encLevel", "encSound"})
+		{
+			if(std::string(target) == "encSound" && model == md::MachineModel::Monomachine) continue;
+			doubleDown(460, target, 6000);
+			require(drain().empty() && rows == Rows{}, "turn-only control acquired an encoder switch");
+			panel->cancelTouches(); drain();
+		}
+
+		// Touch, F1 and Alt-click own the same switch independently, including
+		// visual feedback, in every release order.
+		std::array<int, 3> encoderOrder{{0, 1, 2}};
+		do
+		{
+			doubleDown(470, "encA", 7000); drain();
+			key(juce::KeyPress::F1Key); mouse("encA", true, Rml::Input::KM_ALT); drain();
+			for(size_t i = 0; i < encoderOrder.size(); ++i)
+			{
+				switch(encoderOrder[i])
+				{
+				case 0: timedTouch(471, Phase::End, "encA", 7150); break;
+				case 1: Input::releaseKey(*editor, juce::KeyPress::F1Key); break;
+				case 2: mouse("encA", false, Rml::Input::KM_ALT); break;
+				}
+				drain(); context.Update();
+				require(rows[encoderA.row - 0x20] == (i == 2 ? 0 : encoderA.mask), "shared encoder switch released early or stuck");
+				require(element("encA")->GetComputedValues().opacity() == (i == 2 ? 1.0f : 0.75f), "shared encoder highlight lost or stuck");
+			}
+			panel->cancelTouches(); drain();
+		} while(std::next_permutation(encoderOrder.begin(), encoderOrder.end()));
+		for(int reason = 0; reason < 4; ++reason)
+		{
+			doubleDown(480, "encA", 8000); drain();
+			if(reason == 0) timedTouch(481, Phase::Cancel, "encA", 8200);
+			else if(reason == 1) Input::loseFocus(*editor);
+			else if(reason == 2) key(juce::KeyPress::escapeKey);
+			else panel->setVisible(false);
+			drain(); held("encA", false);
+			require(rows == Rows{}, "cancelled touch left encoder pressed");
+			panel->setVisible(true); panel->grabKeyboardFocus();
+			timedTouch(481, Phase::Move, "encA", 8250, {0, -50}); timedTouch(481, Phase::End, "encA", 8300);
+			require(drain().empty(), "late event revived a cancelled encoder push");
 		}
 
 		const auto pageControl = model == md::MachineModel::Machinedrum

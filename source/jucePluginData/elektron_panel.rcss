@@ -694,4 +694,4 @@
 	width: 52dp;
 }
 /* Physical push feedback without additional panel controls. */
-.encoderPressed, .elektronEncoderControl.keyboardHeld { opacity: 0.75; }
+.encoderPressed, .elektronEncoderControl.keyboardHeld, .elektronEncoderControl.touchHeld { opacity: 0.75; }

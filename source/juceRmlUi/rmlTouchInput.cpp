@@ -47,11 +47,12 @@ namespace juceRmlUi
 			}
 		}
 	}
-	void RmlComponent::setTouchHandler(TouchHandler handler)
+	void RmlComponent::setTouchHandler(TouchHandler handler, std::function<void()> onCancel)
 	{
 		cancelTouches();
 		m_nativeTouchInput.reset();
 		m_touchHandler = std::move(handler);
+		m_touchCancelHandler = std::move(onCancel);
 #if JUCE_MAC
 		if(m_touchHandler) m_nativeTouchInput = createNativeTouchInput(*this);
 #endif
@@ -146,5 +147,7 @@ namespace juceRmlUi
 			else if(route == TouchRoute::Mouse && m_rmlContext) processMouseTouch(event);
 		}
 		if(!touches.empty()) enqueueUpdateOnce();
+		// Completed taps must also expire when no fingers are currently down.
+		if(m_touchCancelHandler) m_touchCancelHandler();
 	}
 }

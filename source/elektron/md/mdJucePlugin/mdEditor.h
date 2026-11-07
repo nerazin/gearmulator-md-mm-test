@@ -136,7 +136,7 @@ namespace mdJucePlugin
 		void setKeyboardFunction(bool _pressed);
 		void refreshKeyboardFeedback(const std::string& id);
 		bool handlePanelTouch(const juceRmlUi::TouchEvent& event);
-		void releasePanelTouch(uint64_t id);
+		void releasePanelTouch(const juceRmlUi::TouchEvent& event);
 		void refreshTouchFeedback(const std::string& id);
 		bool setPanelKey(int _keyCode, bool _pressed, juce::ModifierKeys _modifiers = {},
 			int _nativeKeyCode = -1);
@@ -226,8 +226,14 @@ namespace mdJucePlugin
 			std::string elementId;
 			std::optional<md::PanelPacket> packet;
 			juce::Point<float> lastPosition;
+			bool knob = false;
+			std::optional<unsigned> encoderIndex;
+			juce::Point<float> startPosition;
+			double startedAt = 0;
+			bool tapCandidate = false;
 		};
 		std::vector<PanelTouch> m_panelTouches;
+		std::array<std::optional<double>, 8> m_encoderTouchTaps{};
 		struct KeyboardPanelKey
 		{
 			int keyCode;
