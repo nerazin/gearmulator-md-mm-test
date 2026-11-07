@@ -1,9 +1,15 @@
 #include "juceRmlComponent.h"
 #import <AppKit/AppKit.h>
-#import <AppKit/NSGestureRecognizerSubclass.h>
 #import <objc/runtime.h>
 #import <objc/message.h>
 #include "juce_core/native/juce_ObjCHelpers_mac.h"
+
+// AppKit exposes subclass hooks in NSGestureRecognizer.h. Its state property
+// must be redeclared writable by custom recognizers (there is no separate
+// subclass header as there is in UIKit).
+@interface NSGestureRecognizer (GearmulatorSubclassState)
+@property(readwrite) NSGestureRecognizerState state;
+@end
 
 namespace juceRmlUi
 {
@@ -114,8 +120,7 @@ namespace juceRmlUi
 		{
 			auto pending = std::move(m_pending);
 			m_pending.clear();
-			juce::Component::SafePointer<RmlComponent> panel(&m_component);
-			for(const auto& event : pending) if(panel) panel->processTouch(event);
+			m_component.processTouches(std::move(pending));
 		}
 		void clear()
 		{

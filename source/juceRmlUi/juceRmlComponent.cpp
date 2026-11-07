@@ -1381,6 +1381,7 @@ namespace juceRmlUi
 
 	void RmlComponent::resized()
 	{
+		cancelTouches();
 		{
 			RmlInterfaces::ScopedAccess access(*this);
 			updateRmlContextDimensions();
@@ -1399,6 +1400,7 @@ namespace juceRmlUi
 
 	void RmlComponent::moved()
 	{
+		cancelTouches();
 		Component::moved();
 #ifdef RMLUI_METAL_RENDERER
 		if (m_metalContext)

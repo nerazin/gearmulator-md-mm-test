@@ -1,4 +1,6 @@
 #pragma once
+#include <cstdint>
+#include <memory>
 #include "juce_gui_basics/juce_gui_basics.h"
 
 namespace juceRmlUi

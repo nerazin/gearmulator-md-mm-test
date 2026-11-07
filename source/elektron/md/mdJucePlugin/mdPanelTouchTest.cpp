@@ -131,6 +131,14 @@ int main()
 		const auto function = *md::panelPacket(model, md::PanelControl::Function);
 		const auto record = *md::panelPacket(model, md::PanelControl::Record);
 		const auto tempo = *md::panelPacket(model, md::PanelControl::Tempo);
+		// A native frame contains an unordered set, not an ordered list of fingers.
+		panel->processTouches({{301, Phase::Begin, centre("btRec")}, {302, Phase::Begin, centre("btFunction")}});
+		const auto simultaneous = drain();
+		require(simultaneous.size() == 2 && simultaneous.front() == function, "simultaneous FUNCTION arrived after its target");
+		panel->cancelTouches();
+		const auto cancelled = drain();
+		require(cancelled.size() == 2 && cancelled.back() == md::PanelPacket{function.row, 0}, "cancellation released FUNCTION before its target");
+		require(rows == Rows{}, "simultaneous chord cancellation stuck");
 		touch(100, Phase::Begin, "btFunction");
 		expected[function.row - 0x20] = function.mask;
 		for(int tap = 0; tap < 4; ++tap)
@@ -195,13 +203,14 @@ int main()
 		// Eight independent encoder drags plus a held trig. Check actual UART
 		// commands and direction, including repeated wraps and a very fast swipe.
 		touch(130, Phase::Begin, "trigKey0");
+		drain();
 		std::array<juce::Point<float>, 8> points;
 		for(int i = 0; i < 8; ++i)
 		{
 			const auto id = std::string("enc") + static_cast<char>('A' + i);
 			points[i] = centre(id); touch(140 + i, Phase::Begin, id);
 		}
-		drain();
+		require(drain().empty(), "touching knobs pressed their encoder switches");
 		for(int frame = 0; frame < 12; ++frame)
 			for(int i = 0; i < 8; ++i)
 			{
@@ -223,6 +232,16 @@ int main()
 		for(int i = 1; i < 8; ++i) touch(140 + i, Phase::End, "encA");
 		touch(130, Phase::End, "trigKey0"); drain();
 		require(rows == Rows{}, "touch turning pressed a switch or left a trig");
+		for(const auto& target : std::array<std::pair<const char*, int>, 2>{{{"encLevel", 0x38}, {"encSound", 0x39}}})
+		{
+			if(target.second == 0x39 && model == md::MachineModel::Monomachine) continue;
+			touch(157, Phase::Begin, target.first);
+			panel->processTouch({157, Phase::Move, centre(target.first) + juce::Point<float>(0, -30)});
+			const auto packets = drain();
+			require(!packets.empty(), "additional encoder did not turn");
+			for(const auto& p : packets) require(p.row == target.second && p.mask == 1, "wrong additional encoder");
+			touch(157, Phase::End, target.first);
+		}
 
 		const auto pageControl = model == md::MachineModel::Machinedrum
 			? md::PanelControl::SynthesisEffectsRouting : md::PanelControl::DataPageForward;
@@ -249,8 +268,24 @@ int main()
 			require(drain().empty() && rows == Rows{}, "late event revived cancelled touch");
 			panel->setVisible(true); panel->grabKeyboardFocus();
 		}
+		// Escape must cancel a touch-only gesture rather than opening settings.
+		touch(175, Phase::Begin, "trigKey0"); key(juce::KeyPress::escapeKey); drain();
+		require(rows == Rows{} && !editor->settingsOpened(), "Escape missed a touch-only hold");
+		// Reflow invalidates gesture coordinates; a new contact uses the new scale.
+		const auto originalSize = panel->getBounds();
+		touch(176, Phase::Begin, "trigKey0");
+		panel->setSize(originalSize.getWidth() * 5 / 4, originalSize.getHeight() * 5 / 4); drain();
+		require(rows == Rows{}, "resizing left a touch held");
+		touch(177, Phase::Begin, "btUp"); drain();
+		const auto up = *md::panelPacket(model, md::PanelControl::Up);
+		require(rows[up.row - 0x20] == up.mask, "scaled touch selected the wrong target");
+		touch(177, Phase::End, "btUp"); drain();
+		panel->setSize(originalSize.getWidth(), originalSize.getHeight());
+		touch(179, Phase::Begin, "trigKey0"); drain();
 		auto* popup = context.CreateDocument();
 		popup->Show(Rml::ModalFlag::Modal, Rml::FocusFlag::Document);
+		Input::tick(*editor); drain();
+		require(rows == Rows{}, "opening a popup left an earlier touch held");
 		touch(180, Phase::Begin, "trigKey0"); touch(180, Phase::End, "trigKey0");
 		require(drain().empty(), "touch passed through a popup");
 		popup->Close(); editor->getDocument()->Focus();
@@ -258,6 +293,7 @@ int main()
 		touch(181, Phase::Begin, "trigKey0"); touch(181, Phase::End, "trigKey0");
 		require(drain().empty(), "touch passed through a native modal");
 		modal.exitModalState(0);
+		require(!editor->settingsOpened(), "touch unexpectedly opened the Escape/settings menu");
 		panel->removeFromDesktop();
 		std::puts("Multi-touch buttons, labels, independent knobs, ownership and cancellation passed.");
 		return 0;

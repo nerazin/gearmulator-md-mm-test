@@ -623,6 +623,7 @@ namespace mdJucePlugin
 			auto* b = findChild<juceRmlUi::ElemButton>(pb.id, false);
 			if(!b)
 				continue;
+			b->SetClass("touchModifier", pb.control == md::PanelControl::Function);
 
 			const auto packet = md::panelPacket(model, pb.control);
 			if(!packet)
@@ -711,7 +712,7 @@ namespace mdJucePlugin
 					if(juceRmlUi::helper::getKeyIdentifier(_event) == Rml::Input::KI_UNKNOWN)
 						panelModifiersChanged(_event);
 					if(juceRmlUi::helper::getKeyIdentifier(_event) != Rml::Input::KI_ESCAPE
-						|| (m_keyboardPanelKeys.empty()
+						|| (m_keyboardPanelKeys.empty() && m_panelTouches.empty()
 							&& m_shiftPanelLatch.empty() && m_activePanelButtons.empty()
 							&& m_panelGesturePackets.empty() && !m_patternBankPacket
 							&& !m_encoderPress.active() && !m_lcdDragGesture.active() && m_panelSteps.empty()))
@@ -1061,7 +1062,7 @@ namespace mdJucePlugin
 		// Cancel before the base editor's Rml listener handles Escape by opening
 		// settings. Keep its usual settings shortcut when there is no hold.
 		if(_key.getKeyCode() == juce::KeyPress::escapeKey
-			&& (!m_keyboardPanelKeys.empty() || !m_shiftPanelLatch.empty()
+			&& (!m_keyboardPanelKeys.empty() || !m_panelTouches.empty() || !m_shiftPanelLatch.empty()
 				|| !m_activePanelButtons.empty() || !m_panelGesturePackets.empty()
 				|| m_patternBankPacket || m_encoderPress.active() || m_lcdDragGesture.active() || !m_panelSteps.empty()))
 		{
@@ -2550,6 +2551,8 @@ namespace mdJucePlugin
 			return;
 
 		const auto nowMilliseconds = juce::Time::getMillisecondCounterHiRes();
+		if(!m_panelTouches.empty() && !panelKeyboardAllowed())
+			getRmlComponent()->cancelTouches();
 		// Hosts can miss a native key-up. Only release existing holds here; never
 		// start a panel press from keys used in another window or application.
 		const auto modifiers = juce::ModifierKeys::getCurrentModifiersRealtime();

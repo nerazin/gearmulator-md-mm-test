@@ -98,6 +98,7 @@ namespace juceRmlUi
 		using TouchHandler = std::function<bool(const TouchEvent&)>;
 		void setTouchHandler(TouchHandler handler);
 		void processTouch(const TouchEvent& event); // input: component coordinates
+		void processTouches(std::vector<TouchEvent> events);
 		void cancelTouches();
 
 		void parentHierarchyChanged() override;
@@ -185,9 +186,11 @@ namespace juceRmlUi
 		bool processJuceTouch(const juce::MouseEvent& event, TouchEvent::Phase phase);
 		void cancelMouseTouch();
 		void processMouseTouch(const TouchEvent& event);
+		bool isTouchModifier(juce::Point<float> position) const;
 		enum class TouchRoute { Custom, Mouse, Ignored };
+		struct TouchCapture { TouchRoute route; bool modifier; };
 		TouchHandler m_touchHandler;
-		std::map<uint64_t, TouchRoute> m_touches;
+		std::map<uint64_t, TouchCapture> m_touches;
 		std::optional<uint64_t> m_mouseTouch;
 		bool m_realMouseDown = false;
 		std::unique_ptr<NativeTouchInput> m_nativeTouchInput;

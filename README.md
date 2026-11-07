@@ -1,8 +1,8 @@
-# MD/MM keyboard bindings fork
+# MD/MM keyboard and touch controls
 
 This is a small fork of [joelanders/gearmulator-md-mm](https://github.com/joelanders/gearmulator-md-mm),
 based on [PR #100](https://github.com/joelanders/gearmulator-md-mm/pull/100).
-It adds computer-keyboard controls to the shared Machinedrum and Monomachine
+It adds computer-keyboard and multi-touch controls to the shared Machinedrum and Monomachine
 editor for the standalone applications and VST3 plug-ins, including macOS.
 The layout follows the useful parts of [Octemu's keyboard map](https://github.com/markandrus/octemu/blob/3adc0a8e59db4342ee105f937dc620a0039d5b58/src/main.c),
 adapted to the buttons and pages these two machines actually have. Backspace is
@@ -78,7 +78,52 @@ navigation/YES/NO keys, Control/Command combinations are not panel shortcuts.
 
 In a DAW, give the plug-in window keyboard focus and enable sending keys to the
 plug-in if the host requires it. The emulation and audio are unchanged
-from PR #100. The original project's README follows.
+from PR #100.
+
+## Touch screens and Sidecar
+
+On macOS, direct touch uses an AppKit gesture recognizer attached to the editor's
+native view. Apple's expanded Sidecar finger input requires **macOS 27 and iPadOS
+27 or later**. Build with Xcode 27 or newer to include the SDK's per-view gesture
+exclusivity setting. Older Sidecar versions and remote-display software that
+send only one mouse pointer cannot provide independent fingers to this code.
+Trackpad gestures and Apple Pencil pointer input are not treated as multiple
+screen contacts. See [Apple's Sidecar touch guidance](https://developer.apple.com/documentation/technotes/tn3212-adopting-gesture-recognizers-for-sidecar-touch-support).
+
+- Hold physical panel buttons with separate fingers. Each stays down until its
+  finger lifts, even if the finger drifts outside the button. Touching two places
+  on one button keeps it down until both lift. Keyboard and mouse owners remain
+  independent, and held buttons retain the same visible feedback.
+- For COPY, CLEAR, PASTE and other secondary functions, hold the physical
+  FUNCTION button and press the target button with another finger. The shortcut
+  labels (including MM track MUTE labels) are inert for touch; their mouse
+  shortcuts still work. For tap tempo, hold FUNCTION and repeatedly tap TEMPO.
+- MM bank buttons are momentary with touch: hold a bank while selecting a trig,
+  then lift. Their persistent mouse-click latch is not used for touch.
+- Drag up/right to increase a knob and down/left to decrease it. Several knobs
+  can be turned independently while other fingers hold trigs or FUNCTION. The
+  first finger on each knob owns its drag until lift. Touch does **not** press
+  encoder switches, and no long-press or double-tap push gesture is enabled.
+- Focus loss, hiding, resizing, system cancellation and the keyboard Escape key
+  release touch holds. No touch gesture opens the Escape/settings menu.
+  Settings opened from the keyboard and popups use a single-touch mouse-compatible path; they do
+  not expose the panel underneath. The touch bridge also accepts JUCE touch
+  sources on platforms which supply them.
+
+The `mdPanelTouchTest` and `mmPanelTouchTest` targets exercise independent scan
+rows, FUNCTION chords, disabled touch shortcuts, eight concurrent encoder
+drags, wrap direction, mixed-input ownership and cancellation without firmware.
+The `MD/MM touch input` workflow builds both products and runs the touch and
+keyboard regression tests with the macOS 27 SDK.
+
+Device validation still matters: on a real Sidecar connection, test FUNCTION +
+RECORD, two held trigs while turning two knobs, tap tempo, ignored COPY/MUTE
+labels, and lifting one of several fingers. Repeat in the standalone and the
+DAW plug-in, then disconnect Sidecar during a hold and check that no input
+remains stuck. Automated contact tests cannot validate the iPad transport or
+every host's window behaviour.
+
+The original project's README follows.
 
 ---
 
