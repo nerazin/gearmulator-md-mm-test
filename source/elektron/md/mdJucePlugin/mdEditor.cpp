@@ -623,7 +623,8 @@ namespace mdJucePlugin
 			auto* b = findChild<juceRmlUi::ElemButton>(pb.id, false);
 			if(!b)
 				continue;
-			b->SetClass("touchModifier", pb.control == md::PanelControl::Function);
+			b->SetAttribute("touch-priority", pb.control == md::PanelControl::Function ? 2
+				: panelAffordances::isPatternBank(pb.control) ? 1 : 0);
 
 			const auto packet = md::panelPacket(model, pb.control);
 			if(!packet)

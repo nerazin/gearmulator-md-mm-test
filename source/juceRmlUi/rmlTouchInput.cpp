@@ -5,22 +5,22 @@
 
 namespace juceRmlUi
 {
-	bool RmlComponent::isTouchModifier(const juce::Point<float> position) const
+	int RmlComponent::touchPriority(const juce::Point<float> position) const
 	{
-		if(!m_rmlContext) return false;
+		if(!m_rmlContext) return 0;
 		const auto dimensions = m_rmlContext->GetDimensions();
 		const Rml::Vector2f p{position.x * dimensions.x / std::max(1, getWidth()),
 			position.y * dimensions.y / std::max(1, getHeight())};
 		for(auto* e = m_rmlContext->GetElementAtPoint(p); e; e = e->GetParentNode())
-			if(e->IsClassSet("touchModifier")) return true;
-		return false;
+			if(e->HasAttribute("touch-priority")) return e->GetAttribute<int>("touch-priority", 0);
+		return 0;
 	}
 
 	void RmlComponent::processTouches(std::vector<TouchEvent> events)
 	{
 		RmlInterfaces::ScopedAccess access(*this);
-		// NSTouch sets are unordered. Acquire a simultaneous FUNCTION before
-		// its target; otherwise COPY can briefly be interpreted as plain RECORD.
+		// NSTouch sets are unordered. Acquire simultaneous modifiers before
+		// targets: FUNCTION before BANK, BANK before TRIG, FUNCTION before RECORD.
 		// Preserve the order between successive phases (including very short taps).
 		juce::Component::SafePointer<RmlComponent> alive(this);
 		for(auto first = events.begin(); first != events.end();)
@@ -28,12 +28,17 @@ namespace juceRmlUi
 			const auto phase = first->phase;
 			auto last = std::find_if(first, events.end(), [phase](const TouchEvent& e) { return e.phase != phase; });
 			if(phase == TouchEvent::Phase::Begin)
-				std::stable_partition(first, last, [this](const TouchEvent& e) { return isTouchModifier(e.position); });
-			else if(phase == TouchEvent::Phase::Cancel)
-				std::stable_partition(first, last, [this](const TouchEvent& e)
+				std::stable_sort(first, last, [this](const TouchEvent& a, const TouchEvent& b)
+					{ return touchPriority(a.position) > touchPriority(b.position); });
+			else if(phase == TouchEvent::Phase::End || phase == TouchEvent::Phase::Cancel)
+				std::stable_sort(first, last, [this](const TouchEvent& a, const TouchEvent& b)
 				{
-					const auto it = m_touches.find(e.id);
-					return it == m_touches.end() || !it->second.modifier;
+					const auto priority = [this](uint64_t id)
+					{
+						const auto it = m_touches.find(id);
+						return it == m_touches.end() ? 0 : it->second.priority;
+					};
+					return priority(a.id) < priority(b.id);
 				});
 			while(first != last)
 			{
@@ -81,7 +86,7 @@ namespace juceRmlUi
 				route = TouchRoute::Mouse;
 				m_mouseTouch = event.id;
 			}
-			m_touches.emplace(event.id, TouchCapture{route, isTouchModifier(input.position)});
+			m_touches.emplace(event.id, TouchCapture{route, touchPriority(input.position)});
 			if(route == TouchRoute::Mouse) processMouseTouch(event);
 		}
 		else if(existing != m_touches.end())
@@ -120,22 +125,21 @@ namespace juceRmlUi
 		RmlInterfaces::ScopedAccess access(*this);
 		const auto id = *m_mouseTouch;
 		m_mouseTouch.reset();
-		m_touches[id] = {TouchRoute::Ignored, false};
+		m_touches[id] = {TouchRoute::Ignored, 0};
 		if(m_rmlContext) processMouseTouch({id, TouchEvent::Phase::Cancel, {}});
 	}
 
 	void RmlComponent::cancelTouches()
 	{
 		RmlInterfaces::ScopedAccess access(*this);
-		auto touches = std::move(m_touches);
+		std::vector<std::pair<uint64_t, TouchCapture>> touches(m_touches.begin(), m_touches.end());
 		m_touches.clear();
 		m_mouseTouch.reset();
-		// Release targets before FUNCTION, regardless of native contact-ID order.
-		for(const bool modifier : {false, true})
-		for(auto it = touches.rbegin(); it != touches.rend(); ++it)
+		// Release targets before modifiers, regardless of native contact-ID order.
+		std::stable_sort(touches.begin(), touches.end(), [](const auto& a, const auto& b)
+			{ return a.second.priority < b.second.priority; });
+		for(const auto& [id, capture] : touches)
 		{
-			const auto [id, capture] = *it;
-			if(capture.modifier != modifier) continue;
 			const auto route = capture.route;
 			const TouchEvent event{id, TouchEvent::Phase::Cancel, {}};
 			if(route == TouchRoute::Custom && m_touchHandler) m_touchHandler(event);

@@ -186,9 +186,9 @@ namespace juceRmlUi
 		bool processJuceTouch(const juce::MouseEvent& event, TouchEvent::Phase phase);
 		void cancelMouseTouch();
 		void processMouseTouch(const TouchEvent& event);
-		bool isTouchModifier(juce::Point<float> position) const;
+		int touchPriority(juce::Point<float> position) const;
 		enum class TouchRoute { Custom, Mouse, Ignored };
-		struct TouchCapture { TouchRoute route; bool modifier; };
+		struct TouchCapture { TouchRoute route; int priority; };
 		TouchHandler m_touchHandler;
 		std::map<uint64_t, TouchCapture> m_touches;
 		std::optional<uint64_t> m_mouseTouch;

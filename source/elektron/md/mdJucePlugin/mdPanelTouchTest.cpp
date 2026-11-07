@@ -139,6 +139,17 @@ int main()
 		const auto cancelled = drain();
 		require(cancelled.size() == 2 && cancelled.back() == md::PanelPacket{function.row, 0}, "cancellation released FUNCTION before its target");
 		require(rows == Rows{}, "simultaneous chord cancellation stuck");
+		const auto bank = *md::panelPacket(model, md::PanelControl::BankA);
+		const auto trig = *md::panelPacket(model, md::PanelControl::Trigger1);
+		panel->processTouches({{303, Phase::Begin, centre("trigKey0")}, {304, Phase::Begin, centre("btBankA")}});
+		require(drain() == std::vector<md::PanelPacket>{bank, trig}, "simultaneous bank arrived after its trig");
+		panel->processTouches({{304, Phase::End, centre("btBankA")}, {303, Phase::End, centre("trigKey0")}});
+		require(drain() == std::vector<md::PanelPacket>{{trig.row, 0}, {bank.row, 0}}, "simultaneous lift released bank before trig");
+		panel->processTouches({{305, Phase::Begin, centre("btBankA")}, {306, Phase::Begin, centre("btFunction")}});
+		const auto functionBank = drain();
+		require(functionBank.size() == 2 && functionBank.front() == function, "bank preceded simultaneous FUNCTION");
+		panel->cancelTouches(); drain();
+		require(rows == Rows{}, "bank chord cancellation stuck");
 		touch(100, Phase::Begin, "btFunction");
 		expected[function.row - 0x20] = function.mask;
 		for(int tap = 0; tap < 4; ++tap)
