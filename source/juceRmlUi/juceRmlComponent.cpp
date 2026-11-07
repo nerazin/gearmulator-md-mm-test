@@ -178,6 +178,7 @@ namespace juceRmlUi
 
 	RmlComponent::~RmlComponent()
 	{
+		setTouchHandler({});
 #ifdef RMLUI_METAL_RENDERER
 		if (m_metalContext)
 			m_metalContext->detach();
@@ -510,6 +511,7 @@ namespace juceRmlUi
 	void RmlComponent::visibilityChanged()
 	{
 		Component::visibilityChanged();
+		if(!isShowing()) cancelTouches();
 
 		if (isVisible() && m_openGLContext && !m_openGLContext->isAttached())
 			m_openGLContext->attachTo(*this);
@@ -522,6 +524,9 @@ namespace juceRmlUi
 
 	void RmlComponent::mouseDown(const juce::MouseEvent& _event)
 	{
+		if(processJuceTouch(_event, TouchEvent::Phase::Begin)) return;
+		cancelMouseTouch();
+		m_realMouseDown = true;
 		Component::mouseDown(_event);
 		RmlInterfaces::ScopedAccess access(*this);
 
@@ -537,6 +542,8 @@ namespace juceRmlUi
 
 	void RmlComponent::mouseUp(const juce::MouseEvent& _event)
 	{
+		if(processJuceTouch(_event, TouchEvent::Phase::End)) return;
+		m_realMouseDown = false;
 		Component::mouseUp(_event);
 		RmlInterfaces::ScopedAccess access(*this);
 		const auto pos = toRmlPosition(_event);
@@ -547,6 +554,7 @@ namespace juceRmlUi
 
 	void RmlComponent::mouseMove(const juce::MouseEvent& _event)
 	{
+		if((m_touchHandler && _event.source.isTouch()) || m_mouseTouch) return;
 		Component::mouseMove(_event);
 		RmlInterfaces::ScopedAccess access(*this);
 
@@ -558,6 +566,7 @@ namespace juceRmlUi
 
 	void RmlComponent::mouseDrag(const juce::MouseEvent& _event)
 	{
+		if(processJuceTouch(_event, TouchEvent::Phase::Move)) return;
 		Component::mouseDrag(_event);
 		RmlInterfaces::ScopedAccess access(*this);
 
@@ -574,6 +583,7 @@ namespace juceRmlUi
 
 	void RmlComponent::mouseExit(const juce::MouseEvent& _event)
 	{
+		if((m_touchHandler && _event.source.isTouch()) || m_mouseTouch) return;
 		Component::mouseExit(_event);
 		RmlInterfaces::ScopedAccess access(*this);
 		if (m_rmlContext)
@@ -584,6 +594,7 @@ namespace juceRmlUi
 
 	void RmlComponent::mouseEnter(const juce::MouseEvent& _event)
 	{
+		if((m_touchHandler && _event.source.isTouch()) || m_mouseTouch) return;
 		Component::mouseEnter(_event);
 		RmlInterfaces::ScopedAccess access(*this);
 
@@ -705,6 +716,8 @@ namespace juceRmlUi
 	void RmlComponent::focusLost(FocusChangeType _cause)
 	{
 		Component::focusLost(_cause);
+		cancelTouches();
+		m_realMouseDown = false;
 
 		// We skip this on Linux because apparently focusLost is called when the mouse button is released?!
 		// https://tus.youtrack.cloud/tickets/BUG-10084/
@@ -727,6 +740,7 @@ namespace juceRmlUi
 	void RmlComponent::parentHierarchyChanged()
 	{
 		Component::parentHierarchyChanged();
+		cancelTouches();
 		auto* rootComponent = getTopLevelComponent();
 		if (!m_lookAndFeel)
 			m_lookAndFeel = new LookAndFeel();

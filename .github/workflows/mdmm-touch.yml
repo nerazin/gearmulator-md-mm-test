@@ -1,0 +1,53 @@
+name: MD/MM touch input
+
+on:
+  push:
+    branches: [dev/multi-touch-support]
+  pull_request:
+    paths:
+      - ".github/workflows/mdmm-touch.yml"
+      - "source/juceRmlUi/**"
+      - "source/jucePluginData/elektron_panel.rcss"
+      - "source/elektron/md/mdJucePlugin/**"
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+concurrency:
+  group: mdmm-touch-${{ github.ref }}
+  cancel-in-progress: true
+
+jobs:
+  macos:
+    # Explicit SDK/OS 27: macos-latest may still use an older AppKit SDK.
+    runs-on: xcode-27
+    timeout-minutes: 60
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          submodules: recursive
+      - name: Configure MD and MM
+        run: >-
+          cmake -S . -B build-touch -G Ninja
+          -DCMAKE_BUILD_TYPE=Release -DCMAKE_OSX_ARCHITECTURES=arm64
+          -DCMAKE_OSX_DEPLOYMENT_TARGET=11.0 -DCMAKE_POLICY_VERSION_MINIMUM=3.5
+          -DBUILD_TESTING=ON -DDSP56300_DEBUGGER=OFF
+          -Dgearmulator_BUILD_JUCEPLUGIN=ON -Dgearmulator_BUILD_FX_PLUGIN=OFF
+          -Dgearmulator_BUILD_JUCEPLUGIN_VST2=OFF -Dgearmulator_BUILD_JUCEPLUGIN_VST3=ON
+          -Dgearmulator_BUILD_JUCEPLUGIN_CLAP=OFF -Dgearmulator_BUILD_JUCEPLUGIN_LV2=OFF
+          -Dgearmulator_BUILD_JUCEPLUGIN_AU=OFF -Dgearmulator_BUILD_JUCEPLUGIN_Standalone=ON
+          -Dgearmulator_SYNTH_ELEKTRON=ON -Dgearmulator_SYNTH_OSIRUS=OFF
+          -Dgearmulator_SYNTH_OSTIRUS=OFF -Dgearmulator_SYNTH_VAVRA=OFF
+          -Dgearmulator_SYNTH_XENIA=OFF -Dgearmulator_SYNTH_NODALRED2X=OFF
+          -Dgearmulator_SYNTH_JE8086=OFF
+      - name: Build AppKit bridge, panel tests and products
+        run: >-
+          cmake --build build-touch --parallel 3 --target
+          mdPanelTouchTest mmPanelTouchTest mdPanelKeyboardTest mmPanelKeyboardTest
+          mdShiftPanelLatchTest juceRmlMouseInputTest
+          mdJucePlugin_Standalone mmJucePlugin_Standalone mdJucePlugin_VST3 mmJucePlugin_VST3
+      - name: Test touch and existing input paths
+        run: >-
+          ctest --test-dir build-touch --output-on-failure --timeout 60
+          -R '^(mdPanelTouchTest|mmPanelTouchTest|mdPanelKeyboardTest|mmPanelKeyboardTest|mdShiftPanelLatchTest|juceRmlMouseInputTest)$'

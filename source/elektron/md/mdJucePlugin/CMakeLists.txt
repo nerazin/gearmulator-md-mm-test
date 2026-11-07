@@ -126,6 +126,18 @@ if(BUILD_TESTING)
 		set_tests_properties(${product}PanelKeyboardTest PROPERTIES
 			LABELS "IntegrationTest;Panel;KeyboardInput")
 		set_property(TARGET ${product}PanelKeyboardTest PROPERTY FOLDER "Elektron/test")
+
+		add_executable(${product}PanelTouchTest mdPanelTouchTest.cpp)
+		if(product STREQUAL "mm")
+			target_compile_definitions(${product}PanelTouchTest PRIVATE MD_TOUCH_TEST_MM=1)
+		endif()
+		target_include_directories(${product}PanelTouchTest PRIVATE
+			"${CMAKE_SOURCE_DIR}/source" "${CMAKE_SOURCE_DIR}/source/elektron/md")
+		target_link_libraries(${product}PanelTouchTest PRIVATE ${product}JucePlugin
+			jucePluginEditorLib juceRmlUi juceUiLib juce_plugin_modules mdLib)
+		add_test(NAME ${product}PanelTouchTest COMMAND ${product}PanelTouchTest)
+		set_tests_properties(${product}PanelTouchTest PROPERTIES LABELS "IntegrationTest;Panel;TouchInput")
+		set_property(TARGET ${product}PanelTouchTest PROPERTY FOLDER "Elektron/test")
 	endforeach()
 
 	juce_add_plugin(mdProgramChangeProbe

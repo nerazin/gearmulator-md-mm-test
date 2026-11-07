@@ -37,6 +37,7 @@ namespace juceRmlUi
 	class ElemButton;
 	class ElemCanvas;
 	class ElemKnob;
+	struct TouchEvent;
 }
 
 namespace md
@@ -134,6 +135,9 @@ namespace mdJucePlugin
 		void panelModifiersChanged(const Rml::Event& _event);
 		void setKeyboardFunction(bool _pressed);
 		void refreshKeyboardFeedback(const std::string& id);
+		bool handlePanelTouch(const juceRmlUi::TouchEvent& event);
+		void releasePanelTouch(uint64_t id);
+		void refreshTouchFeedback(const std::string& id);
 		bool setPanelKey(int _keyCode, bool _pressed, juce::ModifierKeys _modifiers = {},
 			int _nativeKeyCode = -1);
 		bool releaseInactivePanelKeys(juce::ModifierKeys _modifiers);
@@ -215,6 +219,15 @@ namespace mdJucePlugin
 		// Keyboard and mouse holds own their bits independently, including when
 		// both inputs hold the same control. sendPanelEvent combines the rows.
 		md::PanelRowState m_keyboardPanelRows;
+		md::PanelRowState m_touchPanelRows;
+		struct PanelTouch
+		{
+			uint64_t id;
+			std::string elementId;
+			std::optional<md::PanelPacket> packet;
+			juce::Point<float> lastPosition;
+		};
+		std::vector<PanelTouch> m_panelTouches;
 		struct KeyboardPanelKey
 		{
 			int keyCode;

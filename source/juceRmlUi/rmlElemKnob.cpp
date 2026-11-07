@@ -72,6 +72,7 @@ namespace juceRmlUi
 
 	void ElemKnob::ProcessEvent(Rml::Event& _event)
 	{
+		if(m_touchDragging) return;
 		switch (_event.GetId())
 		{
 		case Rml::EventId::Mousedown:
@@ -93,6 +94,24 @@ namespace juceRmlUi
 	void ElemKnob::setEndless(bool _endless)
 	{
 		m_endless = _endless;
+	}
+
+	void ElemKnob::applyTouchDelta(const Rml::Vector2f delta)
+	{
+		const auto range = getRange();
+		if(range <= 0 || m_speed <= 0) return;
+		auto change = (delta.x - delta.y) * range / m_speed;
+		// Hardware encoders infer direction across the wrap. A fast swipe must
+		// not jump half a revolution and be read as turning the other way.
+		if(m_endless) change = std::clamp(change, -range * 0.25f, range * 0.25f);
+		auto value = getValue() + change;
+		if(m_endless)
+		{
+			value = std::fmod(value - getMinValue(), range);
+			if(value < 0) value += range;
+			value += getMinValue();
+		}
+		setValue(value);
 	}
 
 	bool ElemKnob::isReversed(const Rml::Element* _element)

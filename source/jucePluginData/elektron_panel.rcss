@@ -212,7 +212,7 @@
 	background-color: #4b4e48;
 }
 
-.elektronPanel .elektronButton:active, .elektronPanel .elektronButton:checked, .elektronPanel .elektronButton.keyboardHeld
+.elektronPanel .elektronButton:active, .elektronPanel .elektronButton:checked, .elektronPanel .elektronButton.keyboardHeld, .elektronPanel .elektronButton.touchHeld
 {
 	background-color: #d05f3d;
 	color: #21170f;
@@ -220,7 +220,7 @@
 
 /* RECORD is red even when idle. A pale face and dark border distinguish
    the key press from the red plastic and from the firmware recording LED. */
-#btRec:active, #btRec:checked, #btRec.keyboardHeld
+#btRec:active, #btRec:checked, #btRec.keyboardHeld, #btRec.touchHeld
 {
 	background-color: #ffe0cc;
 	border-color: #743629;

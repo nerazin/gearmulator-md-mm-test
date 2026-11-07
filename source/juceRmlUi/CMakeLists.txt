@@ -37,6 +37,7 @@ set(SOURCES
 	rmlListEntry.cpp rmlListEntry.h
 	rmlMenu.cpp rmlMenu.h
 	rmlMouseInput.cpp rmlMouseInput.h
+	rmlTouchInput.cpp rmlTouchInput.h
 	rmlRendererProxy.cpp rmlRendererProxy.h
 	rmlRendererJuce.cpp rmlRendererJuce.h
 	rmlShaders.h
@@ -54,6 +55,7 @@ if(APPLE)
 	list(APPEND SOURCES
 		RmlUi_Renderer_Metal.mm
 		MetalContext.mm
+		nativeTouchInput_mac.mm
 	)
 endif()
 

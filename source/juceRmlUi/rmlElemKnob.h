@@ -20,6 +20,9 @@ namespace juceRmlUi
 		void ProcessEvent(Rml::Event& _event) override;
 
 		void setEndless(bool _endless);
+		// Relative touch motion has no shared mouse drag origin or modifiers.
+		void applyTouchDelta(Rml::Vector2f delta);
+		void setTouchDragging(bool active) { m_touchDragging = active; m_lastMod = -1.0f; }
 
 		static bool isReversed(const Rml::Element* _element);
 		static float mouseWheelValueDelta(float _range, const Rml::Event& _event,
@@ -47,6 +50,7 @@ namespace juceRmlUi
 
 		float m_lastMod = -1.0f;
 		bool m_endless = false;
+		bool m_touchDragging = false;
 
 		baseLib::EventListener<float> m_onValueChanged;
 		baseLib::EventListener<float> m_onMinValueChanged;

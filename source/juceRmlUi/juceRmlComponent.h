@@ -5,6 +5,9 @@
 #include "juceRmlDrag.h"
 #include "rmlInterfaces.h"
 #include "rmlRendererProxy.h"
+#include "rmlTouchInput.h"
+#include <map>
+#include <optional>
 #include "baseLib/event.h"
 
 #include "juce_gui_basics/juce_gui_basics.h"
@@ -90,6 +93,13 @@ namespace juceRmlUi
 		void focusLost(FocusChangeType _cause) override;
 		void focusGained(FocusChangeType _cause) override;
 
+		// Opt-in direct touch. The callback receives Rml coordinates; returning
+		// true on Begin captures that finger independently of Rml's one mouse.
+		using TouchHandler = std::function<bool(const TouchEvent&)>;
+		void setTouchHandler(TouchHandler handler);
+		void processTouch(const TouchEvent& event); // input: component coordinates
+		void cancelTouches();
+
 		void parentHierarchyChanged() override;
 
 		void timerCallback() override;
@@ -172,6 +182,15 @@ namespace juceRmlUi
 		int toRmlModifiers(const juce::ModifierKeys& _mods);
 		void logPointerDiagnostic(const char* _kind, const juce::MouseEvent& _event,
 			juce::Point<int> _rmlPosition) const;
+		bool processJuceTouch(const juce::MouseEvent& event, TouchEvent::Phase phase);
+		void cancelMouseTouch();
+		void processMouseTouch(const TouchEvent& event);
+		enum class TouchRoute { Custom, Mouse, Ignored };
+		TouchHandler m_touchHandler;
+		std::map<uint64_t, TouchRoute> m_touches;
+		std::optional<uint64_t> m_mouseTouch;
+		bool m_realMouseDown = false;
+		std::unique_ptr<NativeTouchInput> m_nativeTouchInput;
 
 		RmlInterfaces& m_rmlInterfaces;
 		Rml::CoreInstance& m_coreInstance;

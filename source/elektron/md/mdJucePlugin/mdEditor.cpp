@@ -230,7 +230,10 @@ namespace mdJucePlugin
 	Editor::~Editor()
 	{
 		if(auto* const panel = getRmlComponent())
+		{
+			panel->setTouchHandler({});
 			panel->removeKeyListener(this);
+		}
 		juce::Desktop::getInstance().removeFocusChangeListener(this);
 		cancelPanelInputGestures();
 		stopTimer(g_presentationTimerId);
@@ -253,7 +256,7 @@ namespace mdJucePlugin
 		const auto navigationMask = m_navigationPress && m_navigationPress->row == _command
 			? m_navigationPress->mask : 0;
 		const auto argument = static_cast<uint8_t>(
-			_argument | m_keyboardPanelRows.mask(_command) | navigationMask);
+			_argument | m_keyboardPanelRows.mask(_command) | m_touchPanelRows.mask(_command) | navigationMask);
 		auto& plugin = getProcessor().getPlugin();
 		auto& diagnostics = plugin.getRealtimeInstrumentation();
 		const auto model = static_cast<uint32_t>(getModel());
@@ -386,6 +389,7 @@ namespace mdJucePlugin
 		applyPanelSpeeds();
 		createLeds();
 		createPanelAffordances();
+		getRmlComponent()->setTouchHandler([this](const juceRmlUi::TouchEvent& event) { return handlePanelTouch(event); });
 		applyPixelPerfectPanel();
 
 		// A transfer belongs to the emulated machine, not the lifetime of one
@@ -878,6 +882,7 @@ namespace mdJucePlugin
 			return;
 
 		element->SetClass(panelAffordances::g_affordanceClass, true);
+		element->SetClass("panelFunctionShortcut", true);
 		juceRmlUi::EventListener::Add(element, Rml::EventId::Mousedown,
 			[this, element, _control](Rml::Event&)
 		{
@@ -960,6 +965,7 @@ namespace mdJucePlugin
 
 	void Editor::cancelPanelInputGestures()
 	{
+		if(auto* panel = getRmlComponent()) panel->cancelTouches();
 		// Do not resume a deferred page request after Escape or focus loss.
 		m_panelSteps.clear();
 		m_panelSettleTicks = 0;
@@ -1095,6 +1101,94 @@ namespace mdJucePlugin
 		// real mouse-down on the same button. Share only the skin's press style.
 		element->SetClass("keyboardHeld", down);
 		panel->enqueueUpdateOnce();
+	}
+
+	bool Editor::handlePanelTouch(const juceRmlUi::TouchEvent& event)
+	{
+		using Phase = juceRmlUi::TouchEvent::Phase;
+		if(event.phase == Phase::End || event.phase == Phase::Cancel)
+		{
+			releasePanelTouch(event.id);
+			return true;
+		}
+		if(event.phase == Phase::Move)
+		{
+			const auto contact = std::find_if(m_panelTouches.begin(), m_panelTouches.end(),
+				[&](const PanelTouch& t) { return t.id == event.id; });
+			if(contact != m_panelTouches.end() && !contact->packet)
+			{
+				const auto delta = event.position - contact->lastPosition;
+				contact->lastPosition = event.position;
+				if(auto* knob = findChild<juceRmlUi::ElemKnob>(contact->elementId, false))
+					knob->applyTouchDelta({delta.x, delta.y});
+			}
+			return true;
+		}
+		if(settingsOpened()) return false;
+		auto* panel = getRmlComponent();
+		auto* target = panel->getContext()->GetElementAtPoint({event.position.x, event.position.y});
+		if(!target || target->GetOwnerDocument() != getDocument()) return false;
+		// No fake mouse events, Shift/bank latches or encoder switch gestures.
+		// Each contact stays captured on its original physical control.
+		for(auto* element = target; element; element = element->GetParentNode())
+		{
+			if(element->IsClassSet("panelFunctionShortcut")) return true;
+			const auto& id = element->GetId();
+			for(const auto& button : g_panelButtons)
+				if(id == button.id)
+				{
+					const auto packet = md::panelPacket(getModel(), button.control);
+					if(!packet) return true;
+					setKeyboardFunction(false);
+					m_panelTouches.push_back({event.id, id, packet, event.position});
+					m_touchPanelRows.press(*packet);
+					refreshTouchFeedback(id);
+					(void)sendPanelEvent(packet->row, m_panelRows.mask(packet->row));
+					return true;
+				}
+			if(auto* knob = dynamic_cast<juceRmlUi::ElemKnob*>(element);
+				knob && (knob == m_masterVolume || knob == m_soundEncoder || knob == m_levelEncoder
+					|| std::find(m_encoders.begin(), m_encoders.end(), knob) != m_encoders.end()))
+			{
+				// A second finger on the same knob cannot reset its drag origin.
+				if(std::none_of(m_panelTouches.begin(), m_panelTouches.end(),
+					[&](const PanelTouch& t) { return t.elementId == id; }))
+				{
+					m_panelTouches.push_back({event.id, id, {}, event.position});
+					knob->setTouchDragging(true);
+				}
+				return true;
+			}
+		}
+		return false;
+	}
+
+	void Editor::releasePanelTouch(const uint64_t id)
+	{
+		const auto contact = std::find_if(m_panelTouches.begin(), m_panelTouches.end(),
+			[id](const PanelTouch& t) { return t.id == id; });
+		if(contact == m_panelTouches.end()) return;
+		const auto packet = contact->packet;
+		const auto elementId = contact->elementId;
+		m_panelTouches.erase(contact);
+		m_touchPanelRows.reset();
+		for(const auto& touch : m_panelTouches)
+			if(touch.packet) m_touchPanelRows.press(*touch.packet);
+		if(packet)
+		{
+			refreshTouchFeedback(elementId);
+			(void)sendPanelEvent(packet->row, m_panelRows.mask(packet->row));
+		}
+		else if(auto* knob = findChild<juceRmlUi::ElemKnob>(elementId, false))
+			knob->setTouchDragging(false);
+	}
+
+	void Editor::refreshTouchFeedback(const std::string& id)
+	{
+		if(auto* element = findChild(id, false))
+			element->SetClass("touchHeld", std::any_of(m_panelTouches.begin(), m_panelTouches.end(),
+				[&](const PanelTouch& t) { return t.elementId == id && t.packet.has_value(); }));
+		getRmlComponent()->enqueueUpdateOnce();
 	}
 
 	bool Editor::setPanelKey(const int _rawKeyCode, const bool _pressed,
@@ -1266,7 +1360,7 @@ namespace mdJucePlugin
 			// SYNTHESIS press under FUNCTION, for example, would open the MD LFO.
 			const auto held = [this](const md::PanelPacket& p)
 			{
-				return ((m_keyboardPanelRows.mask(p.row) | m_panelRows.mask(p.row)) & p.mask) != 0;
+				return ((m_keyboardPanelRows.mask(p.row) | m_panelRows.mask(p.row) | m_touchPanelRows.mask(p.row)) & p.mask) != 0;
 			};
 			const auto function = md::panelPacket(getModel(), md::PanelControl::Function);
 			if((function && held(*function)) || held(step.packet)) return;
