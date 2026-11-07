@@ -146,6 +146,7 @@ namespace mdJucePlugin
 
 		// Arbitrary endless-knob value range; only per-move deltas are used.
 		constexpr float g_encoderRange = 100.0f;
+		constexpr float g_knobDragDistanceScale = 2.0f;
 		constexpr int g_encoderBurstCap = 8;	// max ±1 events emitted per Change
 		constexpr int g_presentationTimerId = 1;
 		constexpr int g_panelTimerId = 2;
@@ -473,7 +474,7 @@ namespace mdJucePlugin
 					? lcdInteraction::commandFineScale : 1.0;
 				const auto steps = m_lcdDragGesture.drag(*m_lcdInteractionState,
 					mouse.x, mouse.y,
-					std::max(1, percent) / base * modifier, g_encoderBurstCap);
+					std::max(1, percent) / (base * g_knobDragDistanceScale) * modifier, g_encoderBurstCap);
 				if(const auto encoder = m_lcdDragGesture.encoder(); encoder && steps != 0)
 					emitEncoderSteps(static_cast<md::PanelEncoder>(
 						static_cast<unsigned>(md::PanelEncoder::DataEntryA) + *encoder), steps);
@@ -1570,9 +1571,9 @@ namespace mdJucePlugin
 		const auto wheelPercent = config.getIntValue("panelWheelSpeedPercent", 100);
 		const auto encoderPercent = config.getIntValue("panelEncoderSpeedPercent", 100);
 
-		// The knob "speed" property is the mouse distance for a full sweep, so a
-		// higher user-facing percentage means a smaller property value. Base values
-		// mirror the skins' RCSS defaults.
+		// "speed" is the mouse/touch distance for a full sweep. Double that
+		// distance for finer control, including existing saved speed percentages.
+		// Base values mirror the skins; higher percentages still turn faster.
 		const auto isMonomachine = getModel() == md::MachineModel::Monomachine;
 
 		// juceRmlUi::Element::getProperty() reads the attribute before the RCSS
@@ -1582,7 +1583,7 @@ namespace mdJucePlugin
 		{
 			if (!_knob || _percent <= 0)
 				return;
-			_knob->SetAttribute("speed", _baseSpeed * 100.0f / static_cast<float>(_percent));
+			_knob->SetAttribute("speed", _baseSpeed * g_knobDragDistanceScale * 100.0f / static_cast<float>(_percent));
 		};
 
 		const float encoderBase = isMonomachine ? 150.0f : 120.0f;
@@ -1590,6 +1591,7 @@ namespace mdJucePlugin
 			apply(knob, encoderBase, encoderPercent);
 		apply(m_levelEncoder, isMonomachine ? 150.0f : 100.0f, encoderPercent);
 		apply(m_soundEncoder, 1360.0f, wheelPercent);
+		apply(m_masterVolume, 100.0f, 100);
 	}
 
 	void Editor::loadInstalledFactoryStorage()
