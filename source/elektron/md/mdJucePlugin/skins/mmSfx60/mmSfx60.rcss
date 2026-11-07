@@ -152,7 +152,7 @@ body
 	pointer-events: auto;
 }
 
-.panelAffordance:hover, .panelAffordance.active,
+.panelAffordance:hover, .panelAffordance.active, .panelAffordance.keyboardHeld,
 .mmAffordance:hover, .mmAffordance.active
 {
 	background-color: #bd583c22;
@@ -410,7 +410,7 @@ body
 	background-color: #3c4945;
 }
 
-.mmTrig:active, .mmTrig:checked
+.elektronPanel .mmTrig:active, .elektronPanel .mmTrig:checked, .elektronPanel .mmTrig.keyboardHeld
 {
 	background-color: #c96a40;
 }

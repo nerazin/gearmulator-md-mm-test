@@ -2,9 +2,11 @@
 
 #include <array>
 #include <deque>
+#include <functional>
 #include <initializer_list>
 #include <memory>
 #include <optional>
+#include <string>
 #include <vector>
 
 #include "jucePluginEditorLib/pluginEditor.h"
@@ -46,10 +48,11 @@ namespace mdJucePlugin
 {
 	class Controller;
 	class PixelPerfectPanel;
+	class SettingsOsVersion;
 	struct EditorIdentityTestAccess;
 
 	class Editor final : public jucePluginEditorLib::Editor, juce::MultiTimer,
-		private juce::FocusChangeListener
+		private juce::FocusChangeListener, private juce::KeyListener
 	{
 	public:
 		Editor(jucePluginEditorLib::Processor& _processor, const jucePluginEditorLib::Skin& _skin);
@@ -78,6 +81,10 @@ namespace mdJucePlugin
 		void restorePreviousStorage();
 		bool hasStorageRecoveryImage() const;
 		void chooseUserSysexFile();
+		// Registers a .syx OS upgrade file as a bootable OS variant (no
+		// reboot). The optional callback runs after a successful import so
+		// the OS settings can refresh their list.
+		void importOsVariantFile(std::function<void()> _onImported = {});
 		void cancelUserSysexTransfer();
 		bool canResumeUserSysexTransfer() const;
 		void resumeUserSysexTransfer();
@@ -121,6 +128,15 @@ namespace mdJucePlugin
 		void cancelPanelInputGestures();
 		void releaseAllPanelInputs();
 		void globalFocusChanged(juce::Component* _focusedComponent) override;
+		bool keyPressed(const juce::KeyPress& _key, juce::Component*) override;
+		bool keyStateChanged(bool _isKeyDown, juce::Component*) override;
+		bool panelKeyboardAllowed();
+		void panelModifiersChanged(const Rml::Event& _event);
+		void setKeyboardFunction(bool _pressed);
+		void refreshKeyboardFeedback(const std::string& id);
+		bool setPanelKey(int _keyCode, bool _pressed, juce::ModifierKeys _modifiers = {},
+			int _nativeKeyCode = -1);
+		bool releaseInactivePanelKeys(juce::ModifierKeys _modifiers);
 		void queuePanelPulse(md::PanelControl _control, int _count = 1);
 		void servicePanelQueue();
 		void servicePanelNavigation();
@@ -172,6 +188,15 @@ namespace mdJucePlugin
 		std::unique_ptr<PixelPerfectPanel> m_pixelPerfectPanel;
 		md::FrontPanel m_frontPanelSnapshot;
 		bool m_frontPanelSnapshotValid = false;
+		// Cached panel publisher: resolving it takes the plugin device lock,
+		// which the audio thread can hold for a whole block render, so only
+		// re-resolve when the controller reports a device replacement (see
+		// Controller::publisherEpoch). The cached pointer stays valid across
+		// prepared-state commits (the publisher object is transferred, not
+		// recreated); a fetch racing a replacement self-heals on the next
+		// tick because the epoch can only move forward.
+		std::shared_ptr<md::FrontPanelPublisher> m_cachedFrontPanelPublisher;
+		uint64_t m_cachedFrontPanelPublisherEpoch = 0;
 		bool m_lcdChanged = true;
 		bool m_lcdInteractionInputChanged = true;
 		std::optional<lcdInteraction::State> m_lcdInteractionState;
@@ -187,6 +212,20 @@ namespace mdJucePlugin
 		uint64_t m_ledResyncSequence = 0;
 
 		md::PanelRowState m_panelRows;
+		// Keyboard and mouse holds own their bits independently, including when
+		// both inputs hold the same control. sendPanelEvent combines the rows.
+		md::PanelRowState m_keyboardPanelRows;
+		struct KeyboardPanelKey
+		{
+			int keyCode;
+			int nativeKeyCode;
+			std::optional<md::PanelPacket> packet;
+			std::string feedbackId;
+		};
+		std::vector<KeyboardPanelKey> m_keyboardPanelKeys;
+		// Once Shift is used for a mouse gesture, reserve it for that gesture
+		// until released; keyboard targets must not add an implicit FUNCTION.
+		bool m_mouseOwnsShift = false;
 		juceRmlUi::ElemButton* m_patternBankButton = nullptr;
 		std::optional<md::PanelPacket> m_patternBankPacket;
 		Rml::Element* m_panelGestureElement = nullptr;
@@ -208,6 +247,7 @@ namespace mdJucePlugin
 			bool press = false;
 		};
 		std::deque<PanelStep> m_panelSteps;
+		std::optional<md::PanelPacket> m_navigationPress;
 		int m_panelSettleTicks = 0;
 		panelAffordances::PendingTarget<panelAffordances::g_machinedrumDataPages.size()>
 			m_machinedrumDataPageTarget;
@@ -250,6 +290,9 @@ namespace mdJucePlugin
 		StorageImageFlow m_storageImageFlow = StorageImageFlow::None;
 		std::unique_ptr<juce::FileChooser> m_sysexFileChooser;
 		bool m_sysexChooserOpen = false;
+		std::unique_ptr<juce::FileChooser> m_osVariantFileChooser;
+		bool m_osVariantChooserOpen = false;
+		std::unique_ptr<SettingsOsVersion> m_osVersion;
 		bool m_sysexTransferWasActive = false;
 		md::SysexImportTicket m_sysexMonitoredTicket;
 		md::MidiSysexTransferState m_sysexLastState =

@@ -1,3 +1,89 @@
+# MD/MM keyboard bindings fork
+
+This is a small fork of [joelanders/gearmulator-md-mm](https://github.com/joelanders/gearmulator-md-mm),
+based on [PR #100](https://github.com/joelanders/gearmulator-md-mm/pull/100).
+It adds computer-keyboard controls to the shared Machinedrum and Monomachine
+editor for the standalone applications and VST3 plug-ins, including macOS.
+The layout follows the useful parts of [Octemu's keyboard map](https://github.com/markandrus/octemu/blob/3adc0a8e59db4342ee105f937dc620a0039d5b58/src/main.c),
+adapted to the buttons and pages these two machines actually have. Backspace is
+NO, and Option/Alt selects tracks instead of Control, leaving Control+number
+available for desktop switching.
+
+| Computer key | Machinedrum | Monomachine |
+| --- | --- | --- |
+| Left / Right / Down / Up | Corresponding arrow button | Same |
+| Enter / Return | YES | YES |
+| Backspace (Mac Delete / ⌫) | NO | NO |
+| Shift + a keyboard button | FUNCTION + that button, when no Shift-click gesture is active | Same |
+| Shift-click a panel button | Hold the clicked button until Shift is released | Same |
+| 1 2 3 4 5 6 7 8 | TRIG 1–8 | TRIG 1–8 |
+| Q W E R T Y U I | TRIG 9–16 | TRIG 9–16 |
+| Option/Alt + 1–6 | Select tracks 1–6 | Hold/select tracks 1–6 |
+| Option/Alt + 7–8 | Select tracks 7–8 | Unassigned |
+| Option/Alt + A S D F G H J K | Select tracks 9–16 | Unassigned |
+| J | RECORD | RECORD |
+| K or Space | PLAY | PLAY |
+| L | STOP | STOP |
+| Shift + J | FUNCTION + RECORD (COPY) | Same |
+| Shift + K or Shift + Space | FUNCTION + PLAY (CLEAR) | Same |
+| Shift + L | FUNCTION + STOP (PASTE) | Same |
+| O | KIT | KIT/SONG SETUP |
+| P | PATTERN/SONG | SONG MODE |
+| N | SCALE / pattern page | SCALE / pattern page |
+| Backslash (\) | TEMPO | TEMPO |
+| Hold Shift and tap backslash | Tap tempo | Tap tempo |
+| B | Bank group | Bank group |
+| Z X C V | Bank buttons A/E, B/F, C/G, D/H | Same |
+| A S D | Synthesis, Effects, Routing pages | Synthesis, Amplification, Filter pages |
+| F G H ; | Unassigned | Effects, LFO 1, LFO 2, LFO 3 pages |
+| ] | SYNTHESIS / EFFECTS / ROUTING page button | Next data page button |
+| Shift + ] | FUNCTION + page button (LFO) | FUNCTION + next data page button |
+| [ | Unassigned | Previous data page button |
+| M | CLASSIC/EXTENDED | TRIG SELECT |
+| F1–F8 | Hold encoder switches A–H | Same |
+| Escape | Release held panel inputs; toggle settings when idle | Same |
+
+Use a US English keyboard layout for the letter and punctuation bindings. The
+upper Machinedrum tracks use the home row to avoid macOS accent dead keys. On a
+Mac, Option is the Alt key, and Fn may be needed to send F1–F8 if the function
+row is assigned to system controls. Encoder keys press switches; the existing
+mouse controls still turn the encoders.
+
+Held keys show the same press as a mouse hold on the panel. F1–F8 shade the
+corresponding encoder, and direct page or MD track selection highlights its
+label. RECORD turns pale coral with a dark border while held; the separate
+recording LED continues to show the machine’s recording state.
+
+The bindings work throughout the emulated machine's pages while its panel has
+keyboard focus, including with mouse-held FUNCTION, COPY, CLEAR and PASTE.
+Shift alone does not press FUNCTION: Shift-click holds only the clicked panel
+button, so trigs can be held for parameter locks without selecting another sound.
+Hold Shift and press a panel button on the keyboard to engage FUNCTION. It stays
+held between button presses until you release Shift. For tap tempo, keep Shift
+down and tap backslash once per beat; release Shift to finish.
+After a Shift-click, Shift remains reserved for mouse holds until it is released;
+keyboard arrows, trigs and encoder switches can then be used with those holds
+without adding FUNCTION. To hold FUNCTION for a mouse action, Shift-click the
+on-screen FUNCTION button. Secondary actions follow the firmware and current
+screen. MD track selection and direct page selection use the same actions as
+their clickable labels. Automatic page and mode changes wait for FUNCTION and
+the required page/mode button to be free before sending a press.
+
+Each key keeps its binding until released, including when Shift or Option is
+released first. Mouse holds, keyboard holds and the K/Space aliases own their
+button states independently. OS auto-repeat does not create additional presses.
+Changing window focus or pressing Escape releases held inputs. Native dialogs,
+settings and popup menus keep their normal keys. Other than the original six
+navigation/YES/NO keys, Control/Command combinations are not panel shortcuts.
+
+In a DAW, give the plug-in window keyboard focus and enable sending keys to the
+plug-in if the host requires it. The emulation and audio are unchanged
+from PR #100. The original project's README follows.
+
+---
+
+## Original project
+
 My fork of TUS's Gearmulator project, where I add emulations of Elektron's
 Machinedrum and Monomachine.
 

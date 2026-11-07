@@ -4,6 +4,7 @@
 #include "mdPanelAffordances.h"
 #include "mdPluginProcessor.h"
 #include "mdSettingsAudioInput.h"
+#include "mdSettingsOsVersion.h"
 #include "mdSettingsPanelFeel.h"
 #include "mdPixelPerfectPanel.h"
 #include "mdLcdViewport.h"
@@ -35,6 +36,7 @@
 
 #include "RmlUi/Core/Element.h"
 #include "RmlUi/Core/ElementDocument.h"
+#include "RmlUi/Core/Context.h"
 
 #include <algorithm>
 #include <cmath>
@@ -44,6 +46,10 @@
 
 namespace mdJucePlugin
 {
+#if JUCE_MAC
+	int currentPanelNativeKeyCode();
+	bool isPanelNativeKeyDown(int _keyCode);
+#endif
 	namespace
 	{
 		// The two machines use the same framebuffer geometry but different physical
@@ -62,6 +68,60 @@ namespace mdJucePlugin
 			const char* id;
 			md::PanelControl control;
 		};
+
+		struct PanelKey
+		{
+			int keyCode;
+			md::PanelControl control;
+		};
+
+		const PanelKey g_panelKeys[] =
+		{
+			{ juce::KeyPress::leftKey, md::PanelControl::Left },
+			{ juce::KeyPress::rightKey, md::PanelControl::Right },
+			{ juce::KeyPress::downKey, md::PanelControl::Down },
+			{ juce::KeyPress::upKey, md::PanelControl::Up },
+			{ juce::KeyPress::returnKey, md::PanelControl::Enter },
+			{ juce::KeyPress::backspaceKey, md::PanelControl::Exit },
+		};
+
+		constexpr int g_functionKey = -1;
+		constexpr char g_trigKeys[] = "12345678QWERTYUI";
+		// The home row avoids macOS Option+E/I/U accent dead keys.
+		constexpr char g_trackKeys[] = "12345678ASDFGHJK";
+		constexpr char g_pageKeys[] = "ASDFGH;";
+		const PanelKey g_performanceKeys[] =
+		{
+			{ 'J', md::PanelControl::Record },
+			{ 'K', md::PanelControl::Play },
+			{ juce::KeyPress::spaceKey, md::PanelControl::Play },
+			{ 'L', md::PanelControl::Stop },
+			{ 'O', md::PanelControl::Kit },
+			{ 'N', md::PanelControl::Scale },
+			{ '\\', md::PanelControl::Tempo },
+			{ 'B', md::PanelControl::BankGroup },
+			{ 'Z', md::PanelControl::BankA },
+			{ 'X', md::PanelControl::BankB },
+			{ 'C', md::PanelControl::BankC },
+			{ 'V', md::PanelControl::BankD },
+		};
+
+		bool keyboardFunctionModifiers(const juce::ModifierKeys _mods)
+		{
+			return _mods.isShiftDown() && !_mods.isCtrlDown() && !_mods.isCommandDown();
+		}
+
+		int panelKeyCode(int _keyCode)
+		{
+			if(_keyCode >= 'a' && _keyCode <= 'z')
+				return _keyCode - 'a' + 'A';
+			// JUCE can report the shifted symbol for punctuation/number keys.
+			constexpr char shifted[] = "!@#$%^&*:{}|";
+			constexpr char plain[] = "12345678;[]\\";
+			for(size_t i = 0; i < sizeof(shifted) - 1; ++i)
+				if(_keyCode == shifted[i]) return plain[i];
+			return _keyCode;
+		}
 
 		bool lcdChanged(const md::FrontPanel& _a, const md::FrontPanel& _b)
 		{
@@ -92,6 +152,8 @@ namespace mdJucePlugin
 		constexpr int g_presentationTimerIntervalMilliseconds = 16;
 		constexpr int g_panelTimerIntervalMilliseconds = 33;
 		constexpr size_t g_ledTransitionBatchSize = 256;
+
+		constexpr const char* g_encoderIds[] = {"encA", "encB", "encC", "encD", "encE", "encF", "encG", "encH"};
 
 		constexpr PanelButton g_panelButtons[] =
 		{
@@ -135,6 +197,26 @@ namespace mdJucePlugin
 			{ "btTrack5", md::PanelControl::Track5 },
 			{ "btTrack6", md::PanelControl::Track6 },
 		};
+		// Use the same model-specific packet/element bindings as the mouse. Direct
+		// track and page shortcuts have a printed label rather than a switch.
+		std::string keyboardFeedbackId(md::MachineModel model, const std::optional<md::PanelPacket>& packet, int track, int page)
+		{
+			if(packet)
+			{
+				for(const auto& button : g_panelButtons)
+					if(md::panelPacket(model, button.control) == packet) return button.id;
+				for(size_t i = 0; i < std::size(g_encoderIds); ++i)
+					if(md::panelEncoderPressPacket(model, static_cast<md::PanelEncoder>(i)) == packet)
+						return g_encoderIds[i];
+			}
+			else if(track >= 0)
+				return panelAffordances::g_trackLabelPrefix + std::to_string(track);
+			else if(page >= 0)
+				return model == md::MachineModel::Machinedrum ? panelAffordances::g_machinedrumDataPages[page]
+					: panelAffordances::g_monomachineDataPages[page];
+			return {};
+		}
+
 	}
 
 	Editor::Editor(jucePluginEditorLib::Processor& _processor, const jucePluginEditorLib::Skin& _skin)
@@ -147,8 +229,9 @@ namespace mdJucePlugin
 
 	Editor::~Editor()
 	{
+		if(auto* const panel = getRmlComponent())
+			panel->removeKeyListener(this);
 		juce::Desktop::getInstance().removeFocusChangeListener(this);
-		m_panelSteps.clear();
 		cancelPanelInputGestures();
 		stopTimer(g_presentationTimerId);
 		stopTimer(g_panelTimerId);
@@ -167,25 +250,36 @@ namespace mdJucePlugin
 
 	bool Editor::sendPanelEvent(const uint8_t _command, const uint8_t _argument) const
 	{
+		const auto navigationMask = m_navigationPress && m_navigationPress->row == _command
+			? m_navigationPress->mask : 0;
+		const auto argument = static_cast<uint8_t>(
+			_argument | m_keyboardPanelRows.mask(_command) | navigationMask);
 		auto& plugin = getProcessor().getPlugin();
 		auto& diagnostics = plugin.getRealtimeInstrumentation();
 		const auto model = static_cast<uint32_t>(getModel());
-		const auto token = diagnostics.beginPanelInput(model, _command, _argument);
+		const auto token = diagnostics.beginPanelInput(model, _command, argument);
 		const auto accepted = plugin.withDeviceLocked(
 			[&](synthLib::Device* const _device)
 			{
 				auto* const device = dynamic_cast<md::Device*>(_device);
 				if(!device)
 					return false;
-				return device->sendPanelEvent(_command, _argument);
+				return device->sendPanelEvent(_command, argument);
 			});
-		diagnostics.endPanelInput(token, model, _command, _argument, accepted);
+		diagnostics.endPanelInput(token, model, _command, argument, accepted);
 		return accepted;
 	}
 
 	bool Editor::refreshFrontPanelState(const double _nowMilliseconds)
 	{
-		auto publisher = getFrontPanelPublisher();
+		const auto publisherEpoch = m_controller.publisherEpoch();
+		if(!m_cachedFrontPanelPublisher
+			|| publisherEpoch != m_cachedFrontPanelPublisherEpoch)
+		{
+			m_cachedFrontPanelPublisher = getFrontPanelPublisher();
+			m_cachedFrontPanelPublisherEpoch = publisherEpoch;
+		}
+		const auto publisher = m_cachedFrontPanelPublisher;
 		if(!publisher)
 			return false;
 		const auto presentationBeforeDrain = m_ledPresentation;
@@ -264,6 +358,8 @@ namespace mdJucePlugin
 	void Editor::create()
 	{
 		jucePluginEditorLib::Editor::create();
+		if(auto* const panel = getRmlComponent())
+			panel->addKeyListener(this);
 
 		if(auto* romSelector = findChild<juceRmlUi::ElemComboBox>("RomSelector", false))
 		{
@@ -277,6 +373,11 @@ namespace mdJucePlugin
 			romSelector->setValue(0);
 			romSelector->SetProperty(Rml::PropertyId::PointerEvents, Rml::Style::PointerEvents::None);
 		}
+
+		// The OS version footer lives on the panel itself (not in settings),
+		// so its root outlives any settings page.
+		if(findChild("osVariantList", false))
+			m_osVersion = std::make_unique<SettingsOsVersion>(*this, getRmlRootElement());
 
 		createLcd();
 		createButtons();
@@ -581,9 +682,19 @@ namespace mdJucePlugin
 
 		if(auto* const document = getDocument())
 		{
+			juceRmlUi::EventListener::Add(document, Rml::EventId::Mousedown,
+				[this](const Rml::Event& _event)
+				{
+					m_mouseOwnsShift = _event.GetParameter<int>("shift_key", 0) != 0;
+					// A shifted click takes over Shift; a plain click also clears a
+					// stale keyboard hold if the host missed the Shift-up.
+					setKeyboardFunction(false);
+				}, true); // Release keyboard FUNCTION before the clicked target is pressed.
 			juceRmlUi::EventListener::Add(document, Rml::EventId::Keyup,
 				[this](const Rml::Event& _event)
 				{
+					if(juceRmlUi::helper::getKeyIdentifier(_event) == Rml::Input::KI_UNKNOWN)
+						panelModifiersChanged(_event);
 					if(!juceRmlUi::helper::getKeyModAlt(_event))
 						releaseEncoderPress();
 					if(_event.GetParameter<int>("shift_key", 0) == 0
@@ -593,10 +704,13 @@ namespace mdJucePlugin
 			juceRmlUi::EventListener::Add(document, Rml::EventId::Keydown,
 				[this](Rml::Event& _event)
 				{
+					if(juceRmlUi::helper::getKeyIdentifier(_event) == Rml::Input::KI_UNKNOWN)
+						panelModifiersChanged(_event);
 					if(juceRmlUi::helper::getKeyIdentifier(_event) != Rml::Input::KI_ESCAPE
-						|| (m_shiftPanelLatch.empty() && m_activePanelButtons.empty()
+						|| (m_keyboardPanelKeys.empty()
+							&& m_shiftPanelLatch.empty() && m_activePanelButtons.empty()
 							&& m_panelGesturePackets.empty() && !m_patternBankPacket
-							&& !m_encoderPress.active() && !m_lcdDragGesture.active()))
+							&& !m_encoderPress.active() && !m_lcdDragGesture.active() && m_panelSteps.empty()))
 						return;
 					_event.StopPropagation();
 					cancelPanelInputGestures();
@@ -846,10 +960,17 @@ namespace mdJucePlugin
 
 	void Editor::cancelPanelInputGestures()
 	{
+		// Do not resume a deferred page request after Escape or focus loss.
+		m_panelSteps.clear();
+		m_panelSettleTicks = 0;
+		m_machinedrumDataPageTarget = {};
+		m_monomachineDataPageTarget = {};
+		m_monomachineTrigModeTarget = {};
 		cancelLcdGesture();
 		endPanelGesture();
 		releasePanelButtonGestures();
 		releaseAllPanelInputs();
+		m_mouseOwnsShift = false;
 	}
 
 	void Editor::releaseEncoderPress()
@@ -884,10 +1005,230 @@ namespace mdJucePlugin
 
 	void Editor::releaseAllPanelInputs()
 	{
+		while(!m_keyboardPanelKeys.empty())
+			setPanelKey(m_keyboardPanelKeys.back().keyCode, false);
+		const auto navigationPress = m_navigationPress;
+		m_navigationPress.reset();
 		for(uint8_t row = 0x20; row <= 0x26; ++row)
-			if(m_panelRows.mask(row) != 0)
+			if(m_panelRows.mask(row) != 0 || (navigationPress && navigationPress->row == row))
 				(void)sendPanelEvent(row, 0);
 		m_panelRows.reset();
+	}
+
+	bool Editor::panelKeyboardAllowed()
+	{
+		auto* const panel = getRmlComponent();
+		if(!panel || settingsOpened() || panel->isCurrentlyBlockedByAnotherModalComponent())
+			return false;
+
+		juceRmlUi::RmlInterfaces::ScopedAccess access(*panel);
+		// Native dialogs and Rml popup menus retain their normal keyboard handling.
+		if(auto* const focused = panel->getContext()->GetFocusElement())
+			if(focused->GetOwnerDocument() != getDocument())
+				return false;
+
+		return true;
+	}
+
+	void Editor::panelModifiersChanged(const Rml::Event& _event)
+	{
+		const bool shiftDown = _event.GetParameter<int>("shift_key", 0) != 0;
+		if(!shiftDown)
+			m_mouseOwnsShift = false;
+		// Shift alone belongs to mouse latching. Acquire FUNCTION only on a
+		// recognised keyboard button press, never on a bare modifier transition.
+		if(!shiftDown || _event.GetParameter<int>("ctrl_key", 0) != 0
+			|| _event.GetParameter<int>("meta_key", 0) != 0)
+			setKeyboardFunction(false);
+	}
+
+	void Editor::setKeyboardFunction(const bool _pressed)
+	{
+		setPanelKey(g_functionKey, _pressed && !m_mouseOwnsShift
+			&& panelKeyboardAllowed() && getRmlComponent()->hasKeyboardFocus(true));
+	}
+
+	bool Editor::keyPressed(const juce::KeyPress& _key, juce::Component*)
+	{
+		if(!panelKeyboardAllowed())
+			return false;
+		// Cancel before the base editor's Rml listener handles Escape by opening
+		// settings. Keep its usual settings shortcut when there is no hold.
+		if(_key.getKeyCode() == juce::KeyPress::escapeKey
+			&& (!m_keyboardPanelKeys.empty() || !m_shiftPanelLatch.empty()
+				|| !m_activePanelButtons.empty() || !m_panelGesturePackets.empty()
+				|| m_patternBankPacket || m_encoderPress.active() || m_lcdDragGesture.active() || !m_panelSteps.empty()))
+		{
+			cancelPanelInputGestures();
+			return true;
+		}
+		const auto modifiers = _key.getModifiers();
+		if(!keyboardFunctionModifiers(modifiers))
+			setKeyboardFunction(false); // Also reconcile unbound/host shortcuts after a missed modifier event.
+		// Intercept before RmlUi uses arrows on a focused knob or Enter on the
+		// last mouse target. Record the native key so modifier changes cannot
+		// interrupt a hold on macOS (JUCE clears its key cache on those changes).
+		int nativeKeyCode = -1;
+#if JUCE_MAC
+		nativeKeyCode = currentPanelNativeKeyCode();
+#endif
+		return setPanelKey(_key.getKeyCode(), true, modifiers, nativeKeyCode);
+	}
+
+	bool Editor::keyStateChanged(const bool _isKeyDown, juce::Component*)
+	{
+		return !_isKeyDown && releaseInactivePanelKeys(juce::ModifierKeys::getCurrentModifiersRealtime());
+	}
+
+	void Editor::refreshKeyboardFeedback(const std::string& id)
+	{
+		auto* panel = getRmlComponent();
+		if(!panel || id.empty()) return;
+		juceRmlUi::RmlInterfaces::ScopedAccess access(*panel);
+		auto* element = findChild(id, false);
+		if(!element) return;
+
+		const bool down = std::any_of(m_keyboardPanelKeys.begin(), m_keyboardPanelKeys.end(),
+			[&id](const KeyboardPanelKey& key) { return key.feedbackId == id; });
+		if(element->IsClassSet("keyboardHeld") == down) return;
+		// :checked belongs to the mouse latch; changing it here would block a
+		// real mouse-down on the same button. Share only the skin's press style.
+		element->SetClass("keyboardHeld", down);
+		panel->enqueueUpdateOnce();
+	}
+
+	bool Editor::setPanelKey(const int _rawKeyCode, const bool _pressed,
+		const juce::ModifierKeys _modifiers, const int _nativeKeyCode)
+	{
+		const auto keyCode = panelKeyCode(_rawKeyCode);
+		const auto held = std::find_if(m_keyboardPanelKeys.begin(), m_keyboardPanelKeys.end(),
+			[keyCode](const KeyboardPanelKey& _key) { return _key.keyCode == keyCode; });
+		if(!_pressed)
+		{
+			if(held == m_keyboardPanelKeys.end()) return false;
+			const auto packet = held->packet;
+			const auto feedbackId = std::move(held->feedbackId);
+			m_keyboardPanelKeys.erase(held);
+			refreshKeyboardFeedback(feedbackId);
+			// A key keeps the binding it acquired on keydown, even if Option was
+			// released first. Aliases (K/Space) must also own a row bit separately.
+			m_keyboardPanelRows.reset();
+			for(const auto& key : m_keyboardPanelKeys)
+				if(key.packet) m_keyboardPanelRows.press(*key.packet);
+			if(packet)
+			{
+				(void)sendPanelEvent(packet->row, m_panelRows.mask(packet->row));
+				if(getModel() == md::MachineModel::Monomachine && packet->row <= 0x21)
+					releasePatternBankLatch();
+			}
+			return true;
+		}
+		// Firmware handles held buttons; OS repeat must not repeat actions.
+		if(held != m_keyboardPanelKeys.end()) return true;
+
+		std::optional<md::PanelPacket> packet;
+		int track = -1;
+		int page = -1;
+		const auto model = getModel();
+		const auto navigation = std::find_if(std::begin(g_panelKeys), std::end(g_panelKeys),
+			[keyCode](const PanelKey& _key) { return _key.keyCode == keyCode; });
+		if(keyCode == g_functionKey)
+			packet = md::panelPacket(model, md::PanelControl::Function);
+		else if(navigation != std::end(g_panelKeys))
+			packet = md::panelPacket(model, navigation->control);
+		else
+		{
+			// Leave host/desktop shortcuts alone, including every Control+number.
+			if(_modifiers.isCtrlDown() || _modifiers.isCommandDown()) return false;
+			const auto trig = std::find(std::begin(g_trigKeys), std::end(g_trigKeys) - 1, keyCode);
+			const auto dataPage = std::find(std::begin(g_pageKeys), std::end(g_pageKeys) - 1, keyCode);
+			if(_modifiers.isAltDown())
+			{
+				const auto trackKey = std::find(std::begin(g_trackKeys), std::end(g_trackKeys) - 1, keyCode);
+				if(trackKey == std::end(g_trackKeys) - 1) return false;
+				track = static_cast<int>(trackKey - std::begin(g_trackKeys));
+				if(model == md::MachineModel::Monomachine)
+				{
+					if(track >= 6) return false;
+					packet = md::panelPacket(model, static_cast<md::PanelControl>(
+						static_cast<int>(md::PanelControl::Track1) + track));
+				}
+			}
+			else if(trig != std::end(g_trigKeys) - 1)
+				packet = md::panelPacket(model, static_cast<md::PanelControl>(
+					static_cast<int>(md::PanelControl::Trigger1) + trig - std::begin(g_trigKeys)));
+			else if(keyCode >= juce::KeyPress::F1Key && keyCode <= juce::KeyPress::F8Key)
+				packet = md::panelEncoderPressPacket(model,
+					static_cast<md::PanelEncoder>(keyCode - juce::KeyPress::F1Key));
+			else if(dataPage != std::end(g_pageKeys) - 1)
+			{
+				page = static_cast<int>(dataPage - std::begin(g_pageKeys));
+				if(model == md::MachineModel::Machinedrum && page >= 3) return false;
+			}
+			else if(keyCode == 'P')
+				packet = md::panelPacket(model, model == md::MachineModel::Machinedrum
+					? md::PanelControl::PatternSong : md::PanelControl::SongEnable);
+			else if(keyCode == 'M')
+				packet = md::panelPacket(model, model == md::MachineModel::Machinedrum
+					? md::PanelControl::ClassicExtended : md::PanelControl::TrigSelect);
+			else if(keyCode == ']' && model == md::MachineModel::Machinedrum)
+				packet = md::panelPacket(model, md::PanelControl::SynthesisEffectsRouting);
+			else if(keyCode == '[' || keyCode == ']')
+				packet = md::panelPacket(model, keyCode == '['
+					? md::PanelControl::DataPageBackward : md::PanelControl::DataPageForward);
+			else
+			{
+				const auto binding = std::find_if(std::begin(g_performanceKeys), std::end(g_performanceKeys),
+					[keyCode](const PanelKey& _key) { return _key.keyCode == keyCode; });
+				if(binding != std::end(g_performanceKeys)) packet = md::panelPacket(model, binding->control);
+			}
+		}
+		if(!packet && track < 0 && page < 0) return false;
+		// Once a hardware button claims Shift, FUNCTION belongs to Shift itself.
+		// Releasing TEMPO (or any other target) must not interrupt a series of taps.
+		if(keyCode != g_functionKey && packet && keyboardFunctionModifiers(_modifiers))
+			setKeyboardFunction(true);
+		m_keyboardPanelKeys.push_back({keyCode, _nativeKeyCode, packet, keyboardFeedbackId(model, packet, track, page)});
+		refreshKeyboardFeedback(m_keyboardPanelKeys.back().feedbackId);
+		if(packet)
+		{
+			m_keyboardPanelRows.press(*packet);
+			(void)sendPanelEvent(packet->row, m_panelRows.mask(packet->row));
+		}
+		else if(track >= 0)
+			selectMachinedrumTrack(track);
+		else if(model == md::MachineModel::Machinedrum)
+			selectMachinedrumDataPage(page);
+		else
+			selectMonomachineDataPage(page);
+		return true;
+	}
+
+	bool Editor::releaseInactivePanelKeys(const juce::ModifierKeys _modifiers)
+	{
+		if(m_keyboardPanelKeys.empty()) return false;
+		if(!panelKeyboardAllowed() || !getRmlComponent()->hasKeyboardFocus(true))
+		{
+			cancelPanelInputGestures();
+			return true;
+		}
+		bool released = false;
+		for(auto i = m_keyboardPanelKeys.size(); i-- > 0;)
+		{
+			const auto& key = m_keyboardPanelKeys[i];
+			bool down = key.keyCode == g_functionKey
+				? keyboardFunctionModifiers(_modifiers)
+				: juce::KeyPress::isKeyCurrentlyDown(key.keyCode);
+#if JUCE_MAC
+			if(key.nativeKeyCode >= 0) down = isPanelNativeKeyDown(key.nativeKeyCode);
+#endif
+			if(!down)
+			{
+				setPanelKey(key.keyCode, false);
+				released = true;
+			}
+		}
+		return released;
 	}
 
 	void Editor::queuePanelPulse(const md::PanelControl _control, const int _count)
@@ -919,10 +1260,23 @@ namespace mdJucePlugin
 
 		const auto step = m_panelSteps.front();
 
-		const auto combined = step.press ? m_panelRows.press(step.packet) : m_panelRows.release(step.packet);
-		// Navigation pulses are retryable: do not advance to the matching release
-		// until this row state actually entered the bounded FIFO.
-		if(!sendPanelEvent(combined.row, combined.mask))
+		if(step.press && !m_navigationPress)
+		{
+			// Direct page/mode selection uses unmodified panel presses. A queued
+			// SYNTHESIS press under FUNCTION, for example, would open the MD LFO.
+			const auto held = [this](const md::PanelPacket& p)
+			{
+				return ((m_keyboardPanelRows.mask(p.row) | m_panelRows.mask(p.row)) & p.mask) != 0;
+			};
+			const auto function = md::panelPacket(getModel(), md::PanelControl::Function);
+			if((function && held(*function)) || held(step.packet)) return;
+		}
+		// The queued pulse owns its bit independently: its release must preserve
+		// a mouse or keyboard press on the same button received in the meantime.
+		// The FIFO retains rejected row states for recovery. Keep that requested
+		// state authoritative during retries and clear it explicitly on cancellation.
+		m_navigationPress = step.press ? std::optional{step.packet} : std::nullopt;
+		if(!sendPanelEvent(step.packet.row, m_panelRows.mask(step.packet.row)))
 			return;
 		m_panelSteps.pop_front();
 
@@ -1084,11 +1438,9 @@ namespace mdJucePlugin
 
 	void Editor::createEncoders()
 	{
-		static const char* const ids[8] = { "encA","encB","encC","encD","encE","encF","encG","encH" };
-
 		for(uint32_t i=0; i<8; ++i)
 		{
-			auto* k = findChild<juceRmlUi::ElemKnob>(ids[i], false);
+			auto* k = findChild<juceRmlUi::ElemKnob>(g_encoderIds[i], false);
 			m_encoders[i] = k;
 			configureEncoder(k, static_cast<md::PanelEncoder>(i), m_encLast[i], m_encAccum[i]);
 		}
@@ -1486,7 +1838,6 @@ namespace mdJucePlugin
 
 	void Editor::launchUserSysexFileChooser(const md::SysexImportTicket& ticket)
 	{
-
 		auto& config = getProcessor().getConfig();
 		juce::File initial(config.getValue("mdMmSysexLastDirectory"));
 		if(!initial.isDirectory())
@@ -1512,8 +1863,7 @@ namespace mdJucePlugin
 
 	void Editor::sendUserSysexFile(const juce::File& _file, const md::SysexImportTicket& ticket)
 	{
-		const auto fileSize = _file.getSize();
-		if(fileSize <= 0)
+		const auto fileSize = _file.getSize();		if(fileSize <= 0)
 		{
 			showUserSysexError("The selected file is empty.");
 			return;
@@ -1629,6 +1979,56 @@ namespace mdJucePlugin
 	{
 		genericUI::MessageBox::showOk(genericUI::MessageBox::Icon::Warning,
 			"SysEx file not sent", _message.toStdString(), getRmlComponent());
+	}
+
+	void Editor::importOsVariantFile(std::function<void()> _onImported)
+	{
+		if(m_osVariantChooserOpen)
+			return;
+		m_osVariantChooserOpen = true;
+
+		auto& config = getProcessor().getConfig();
+		juce::File initial(config.getValue("osVariantLastDirectory"));
+		if(!initial.isDirectory())
+			initial = juce::File::getSpecialLocation(juce::File::userDocumentsDirectory);
+
+		m_osVariantFileChooser = std::make_unique<juce::FileChooser>(
+			"Register OS upgrade file as a bootable OS", initial,
+			"*.syx;*.SYX", true);
+		const std::weak_ptr<void> lifetime = m_lifetimeToken;
+		m_osVariantFileChooser->launchAsync(
+			juce::FileBrowserComponent::openMode
+				| juce::FileBrowserComponent::canSelectFiles,
+			[lifetime, this, onImported = std::move(_onImported)](
+				const juce::FileChooser& _chooser)
+			{
+				if(lifetime.expired())
+					return;
+				m_osVariantChooserOpen = false;
+				const auto file = _chooser.getResult();
+				if(!file.existsAsFile())
+					return;
+				auto* const processor =
+					dynamic_cast<AudioPluginAudioProcessor*>(&getProcessor());
+				if(!processor)
+					return;
+				juce::String result;
+				const bool registered = processor->importOsVariant(file, result);
+				if(registered)
+				{
+					auto& config = getProcessor().getConfig();
+					config.setValue("osVariantLastDirectory",
+						file.getParentDirectory().getFullPathName());
+					config.saveIfNeeded();
+				}
+				genericUI::MessageBox::showOk(registered
+						? genericUI::MessageBox::Icon::Info
+						: genericUI::MessageBox::Icon::Warning,
+					registered ? "OS registered" : "OS not registered",
+					result.toStdString(), getRmlComponent());
+				if(registered && onImported)
+					onImported();
+			});
 	}
 
 	void Editor::serviceUserSysexProgress()
@@ -2056,13 +2456,17 @@ namespace mdJucePlugin
 			return;
 
 		const auto nowMilliseconds = juce::Time::getMillisecondCounterHiRes();
+		// Hosts can miss a native key-up. Only release existing holds here; never
+		// start a panel press from keys used in another window or application.
 		const auto modifiers = juce::ModifierKeys::getCurrentModifiersRealtime();
+		releaseInactivePanelKeys(modifiers);
+		if(!modifiers.isShiftDown())
+			m_mouseOwnsShift = false;
 		if(m_encoderPress.active() && (!modifiers.isAltDown() || !modifiers.isLeftButtonDown()))
 			releaseEncoderPress();
 		// Some plugin hosts can lose the modifier key-up when focus changes. Poll
 		// native state as a fail-safe so no panel row remains held indefinitely.
-		if(!m_shiftPanelLatch.empty()
-			&& !juce::ModifierKeys::getCurrentModifiersRealtime().isShiftDown())
+		if(!m_shiftPanelLatch.empty() && !modifiers.isShiftDown())
 			releasePanelButtonGestures();
 
 		const auto hadFrontPanelSnapshot = m_frontPanelSnapshotValid;
