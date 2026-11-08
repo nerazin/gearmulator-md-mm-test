@@ -149,7 +149,7 @@ namespace mdJucePlugin
 		constexpr double g_touchTapDurationMs = 250.0;
 		constexpr double g_touchDoubleTapIntervalMs = 350.0;
 		constexpr float g_touchTapTravelSquared = 36.0f; // Six logical pixels.
-		constexpr float g_knobDragDistanceScale = 2.0f;
+		constexpr float g_knobDragDistanceScale = 3.0f;
 		constexpr int g_encoderBurstCap = 8;	// max ±1 events emitted per Change
 		constexpr int g_presentationTimerId = 1;
 		constexpr int g_panelTimerId = 2;
@@ -1625,7 +1625,7 @@ namespace mdJucePlugin
 		const auto wheelPercent = config.getIntValue("panelWheelSpeedPercent", 100);
 		const auto encoderPercent = config.getIntValue("panelEncoderSpeedPercent", 100);
 
-		// "speed" is the mouse/touch distance for a full sweep. Double that
+		// "speed" is the mouse/touch distance for a full sweep. Triple that
 		// distance for finer control, including existing saved speed percentages.
 		// Base values mirror the skins; higher percentages still turn faster.
 		const auto isMonomachine = getModel() == md::MachineModel::Monomachine;

@@ -185,7 +185,10 @@ screen contacts. See [Apple's Sidecar touch guidance](https://developer.apple.co
 - Drag up/right to increase a knob and down/left to decrease it. Several knobs
   can be turned independently while other fingers hold trigs or FUNCTION. The
   first finger on each knob owns its drag until lift. Mouse and touch drags use
-  the same reduced sensitivity for fine adjustments.
+  the same reduced sensitivity for fine adjustments: at 100% in settings,
+  drags need three times the movement of the original defaults. LCD dragging
+  uses the same reduction. The firmware controls each parameter's value range;
+  the reduction applies equally to continuous parameters and short choice lists.
 - To push a data-entry knob **A–H**, tap it once, lift, then touch the same knob
   again within 350 ms and keep your finger down. The second contact immediately
   presses the encoder switch and shades the knob. Drag that finger to turn while

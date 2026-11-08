@@ -247,7 +247,8 @@ int main()
 		{
 			if(target.second == 0x39 && model == md::MachineModel::Monomachine) continue;
 			touch(157, Phase::Begin, target.first);
-			panel->processTouch({157, Phase::Move, centre(target.first) + juce::Point<float>(0, -30)});
+			// Cross a whole detent even on the much slower MD sound selector.
+			panel->processTouch({157, Phase::Move, centre(target.first) + juce::Point<float>(0, -60)});
 			const auto packets = drain();
 			require(!packets.empty(), "additional encoder did not turn");
 			for(const auto& p : packets) require(p.row == target.second && p.mask == 1, "wrong additional encoder");
